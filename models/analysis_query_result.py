@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
+from bson import BSON
 from pymongo import ASCENDING, MongoClient
 
 from config import Config
@@ -18,15 +19,37 @@ class AnalysisQueryResultStore:
     the existing record instead of creating duplicates.
     """
 
+    DEFAULT_MAX_DOCUMENT_BYTES = 15 * 1024 * 1024  # just under MongoDB's 16MB limit
+    MIN_CHUNK_TARGET_BYTES = 512 * 1024  # 512KB fallback to keep splits practical
+
     def __init__(
         self,
         db_client: Optional[MongoClient] = None,
         collection_name: str = "analysis_query_results",
+        chunk_collection_name: str = "analysis_query_result_chunks",
+        max_document_bytes: Optional[int] = None,
+        chunk_target_bytes: Optional[int] = None,
     ) -> None:
         self._client = db_client or MongoClient(Config.MONGO_URI)
         self._db = self._client[Config.DATABASE_NAME]
         self.collection = self._db[collection_name]
+        self.chunk_collection = self._db[chunk_collection_name]
+
+        self._max_document_bytes = max_document_bytes or self.DEFAULT_MAX_DOCUMENT_BYTES
+        default_chunk_target = max(1, int(self._max_document_bytes * 0.8))
+        requested_target = chunk_target_bytes or default_chunk_target
+        safety_margin = max(1024, int(self._max_document_bytes * 0.05))
+        upper_bound = max(1, self._max_document_bytes - safety_margin)
+        lower_bound = (
+            self.MIN_CHUNK_TARGET_BYTES
+            if upper_bound > self.MIN_CHUNK_TARGET_BYTES
+            else 1
+        )
+        bounded_target = min(requested_target, upper_bound)
+        self._chunk_target_bytes = max(lower_bound, bounded_target)
+
         self._ensure_indexes()
+        self._ensure_chunk_indexes()
 
     def _ensure_indexes(self) -> None:
         """
@@ -35,6 +58,13 @@ class AnalysisQueryResultStore:
         """
         self.collection.create_index([("plan_id", ASCENDING)], unique=True)
         self.collection.create_index("updated_at")
+
+    def _ensure_chunk_indexes(self) -> None:
+        """Set up indexes that support ordered retrieval and cleanup."""
+        self.chunk_collection.create_index(
+            [("plan_id", ASCENDING), ("chunk_index", ASCENDING)], unique=True
+        )
+        self.chunk_collection.create_index("updated_at")
 
     def save_joined_results(
         self,
@@ -71,11 +101,7 @@ class AnalysisQueryResultStore:
             "updated_at": datetime.now(timezone.utc),
         }
 
-        self.collection.update_one(
-            {"plan_id": plan_id},
-            {"$set": document},
-            upsert=True,
-        )
+        document = self._persist_document(plan_id, document)
         return document
 
     def _sanitize(self, value: Any) -> Any:
@@ -108,3 +134,151 @@ class AnalysisQueryResultStore:
             return [self._sanitize(v) for v in value.tolist()]
 
         return value
+
+    def _persist_document(self, plan_id: str, document: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Store the document in MongoDB, spilling large ``results`` payloads into chunks.
+        """
+        if self._fits_single_document(document):
+            # Clean up any orphaned chunks from previous oversized writes.
+            self._delete_existing_chunks(plan_id)
+            self._upsert_document(plan_id, document)
+            return document
+
+        results_payload = document.get("results") or []
+        if not results_payload:
+            raise ValueError(
+                "Analysis payload exceeds MongoDB document limits even without the "
+                "results. Reduce metadata or summary size before persisting."
+            )
+
+        external_meta = self._store_results_in_chunks(plan_id, results_payload)
+        document["results"] = None
+        document["results_external"] = external_meta
+        document["results_stored_externally"] = True
+
+        if not self._fits_single_document(document):
+            raise ValueError(
+                "Analysis metadata still exceeds MongoDB document limits after moving "
+                "results into a chunk collection. Consider trimming optional fields."
+            )
+
+        self._upsert_document(plan_id, document)
+        return document
+
+    def _fits_single_document(self, document: Dict[str, Any]) -> bool:
+        """True when the encoded BSON payload is within MongoDB's document limit."""
+        return self._estimate_bson_size(document) <= self._max_document_bytes
+
+    @staticmethod
+    def _estimate_bson_size(document: Dict[str, Any]) -> int:
+        """Approximate payload size by BSON-encoding the document."""
+        return len(BSON.encode(document))
+
+    def _upsert_document(self, plan_id: str, document: Dict[str, Any]) -> None:
+        self.collection.update_one(
+            {"plan_id": plan_id},
+            {"$set": document},
+            upsert=True,
+        )
+
+    def _delete_existing_chunks(self, plan_id: str) -> None:
+        self.chunk_collection.delete_many({"plan_id": plan_id})
+
+    def _store_results_in_chunks(
+        self,
+        plan_id: str,
+        rows: Sequence[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """
+        Write the results list into multiple documents so each stays below the limit.
+        """
+        chunk_payloads = self._chunk_rows(plan_id, rows)
+        self._delete_existing_chunks(plan_id)
+
+        if chunk_payloads:
+            self.chunk_collection.insert_many(chunk_payloads)
+
+        return {
+            "collection": self.chunk_collection.name,
+            "chunk_count": len(chunk_payloads),
+            "chunk_record_counts": [payload["record_count"] for payload in chunk_payloads],
+            "total_records": len(rows),
+            "max_document_bytes": self._max_document_bytes,
+        }
+
+    def _chunk_rows(
+        self,
+        plan_id: str,
+        rows: Sequence[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """
+        Split the sanitized rows into BSON-aware chunks under the configured limit.
+        """
+        prepared_rows = list(rows)
+        if not prepared_rows:
+            return []
+
+        chunks: List[Dict[str, Any]] = []
+        current_rows: List[Dict[str, Any]] = []
+        chunk_index = 0
+        timestamp = datetime.now(timezone.utc)
+
+        for row in prepared_rows:
+            candidate_rows = current_rows + [row]
+            candidate_doc = self._chunk_document(
+                plan_id=plan_id,
+                index=chunk_index,
+                rows=candidate_rows,
+                timestamp=timestamp,
+            )
+            candidate_size = self._estimate_bson_size(candidate_doc)
+
+            if candidate_size <= self._chunk_target_bytes:
+                current_rows = candidate_rows
+                continue
+
+            if not current_rows:
+                raise ValueError(
+                    "A single result row exceeds the configured MongoDB document size "
+                    "limit. Remove large intermediate columns before storing results."
+                )
+
+            chunks.append(
+                self._chunk_document(
+                    plan_id=plan_id,
+                    index=chunk_index,
+                    rows=current_rows,
+                    timestamp=timestamp,
+                )
+            )
+            chunk_index += 1
+            current_rows = [row]
+
+        if current_rows:
+            chunks.append(
+                self._chunk_document(
+                    plan_id=plan_id,
+                    index=chunk_index,
+                    rows=current_rows,
+                    timestamp=timestamp,
+                )
+            )
+
+        return chunks
+
+    @staticmethod
+    def _chunk_document(
+        plan_id: str,
+        index: int,
+        rows: Sequence[Dict[str, Any]],
+        timestamp: datetime,
+    ) -> Dict[str, Any]:
+        """Build the persisted representation for a chunk of rows."""
+        return {
+            "plan_id": plan_id,
+            "chunk_index": index,
+            "rows": list(rows),
+            "record_count": len(rows),
+            "updated_at": timestamp,
+        }
