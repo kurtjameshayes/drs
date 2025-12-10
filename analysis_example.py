@@ -11,6 +11,7 @@ from pymongo.errors import PyMongoError
 
 from config import Config
 from core.query_engine import QueryEngine
+from models.analysis_query_result import AnalysisQueryResultStore
 
 
 def build_query_specs_from_saved_queries(
@@ -336,6 +337,23 @@ def main():
         analysis_plan=analysis_plan,
     )
 
+    results_store = AnalysisQueryResultStore()
+    stored_document = results_store.save_joined_results(
+        plan_id=args.analysis_plan_id,
+        plan_name=plan_label,
+        join_columns=join_on,
+        join_strategy=join_strategy,
+        query_specs=query_specs,
+        dataframe=dataframe,
+        analysis_summary=analysis["analysis"],
+        metadata={
+            "analysis_plan_collection": args.analysis_plan_collection,
+            "plan_document_id": plan_document.get("_id"),
+            "description": plan_document.get("description"),
+            "tags": plan_document.get("tags"),
+        },
+    )
+
     print(
         f"Analysis plan '{plan_label}' ({args.analysis_plan_id})\n"
         f"- Join columns: {', '.join(join_on)}\n"
@@ -357,6 +375,12 @@ def main():
 
     print("\nJoined DataFrame sample:\n")
     print(dataframe.head())
+
+    print(
+        "\nStored {rows} joined rows in MongoDB collection 'analysis_query_results'.".format(
+            rows=stored_document["record_count"]
+        )
+    )
 
     print("\nLinear Regression Summary:\n")
     pprint(analysis["analysis"].get("linear_regression"))
