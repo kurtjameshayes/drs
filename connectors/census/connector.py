@@ -1,8 +1,10 @@
 import requests
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from core.base_connector import BaseConnector
 import logging
 import time
+from pymongo import MongoClient
+from config import Config
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -14,12 +16,14 @@ class CensusConnector(BaseConnector):
     API Documentation: https://www.census.gov/data/developers/guidance/api-user-guide.html
     """
     
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any], attr_lookup: Optional["AttrNameLookup"] = None):
         super().__init__(config)
         self.base_url = config.get("url", "https://api.census.gov/data")
         self.api_key = config.get("api_key")  # Optional but recommended
         self.max_retries = config.get("max_retries", 3)
         self.retry_delay = config.get("retry_delay", 1)
+        self._attr_lookup: Optional["AttrNameLookup"] = attr_lookup
+        self._attr_lookup_unavailable = False
     
     def connect(self) -> bool:
         """Establish connection by validating API access."""
@@ -179,6 +183,50 @@ class CensusConnector(BaseConnector):
             })
         return fields
     
+    def process_result(self, result: Dict[str, Any], parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Replace column headers with descriptions from the attr_name collection.
+        """
+        attr_lookup = self._get_attr_lookup()
+        if not attr_lookup:
+            return result
+        
+        records = result.get("data")
+        if not isinstance(records, list) or not records:
+            return result
+        
+        schema = result.get("schema", {})
+        fields = schema.get("fields", []) if isinstance(schema, dict) else []
+        
+        headers = [
+            field.get("name") for field in fields
+            if isinstance(field, dict) and field.get("name")
+        ]
+        if not headers:
+            # Fallback to keys from the first record if schema is missing.
+            headers = list(records[0].keys())
+        
+        header_map = attr_lookup.get_descriptions(headers)
+        if not header_map:
+            return result
+        
+        renamed_records = []
+        for record in records:
+            renamed_record = {}
+            for key, value in record.items():
+                new_key = header_map.get(key, key)
+                renamed_record[new_key] = value
+            renamed_records.append(renamed_record)
+        result["data"] = renamed_records
+        
+        if isinstance(fields, list):
+            for field in fields:
+                name = field.get("name")
+                if name in header_map:
+                    field["name"] = header_map[name]
+        
+        return result
+    
     def get_capabilities(self) -> Dict[str, Any]:
         """Get connector capabilities."""
         capabilities = super().get_capabilities()
@@ -227,3 +275,59 @@ class CensusConnector(BaseConnector):
             logger.error(f"Failed to retrieve variables: {str(e)}")
         
         return {}
+    
+    def _get_attr_lookup(self) -> Optional["AttrNameLookup"]:
+        """
+        Lazily initialize the attribute name lookup helper.
+        """
+        if self._attr_lookup_unavailable:
+            return None
+        
+        if self._attr_lookup is None:
+            try:
+                self._attr_lookup = AttrNameLookup()
+            except Exception as exc:
+                logger.warning(
+                    "Attr name lookup unavailable for CensusConnector: %s",
+                    exc
+                )
+                self._attr_lookup_unavailable = True
+                return None
+        return self._attr_lookup
+
+
+class AttrNameLookup:
+    """
+    Helper class to resolve Census variable codes to descriptions via MongoDB.
+    """
+
+    def __init__(
+        self,
+        mongo_client: Optional[MongoClient] = None,
+        collection=None,
+    ):
+        if collection is not None:
+            self._collection = collection
+        else:
+            client = mongo_client or MongoClient(Config.MONGO_URI)
+            self._collection = client[Config.DATABASE_NAME].attr_name
+
+    def get_descriptions(self, variable_codes: List[str]) -> Dict[str, str]:
+        if not variable_codes:
+            return {}
+
+        cursor = self._collection.find(
+            {"variable_code": {"$in": variable_codes}},
+            {"variable_code": 1, "description": 1},
+        )
+
+        descriptions: Dict[str, str] = {}
+        for doc in cursor:
+            variable_code = doc.get("variable_code")
+            if not variable_code or variable_code in descriptions:
+                continue
+            description = doc.get("description")
+            if description:
+                descriptions[variable_code] = description
+
+        return descriptions
