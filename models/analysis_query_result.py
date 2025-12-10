@@ -22,6 +22,8 @@ class AnalysisQueryResultStore:
     DEFAULT_MAX_DOCUMENT_BYTES = 15 * 1024 * 1024  # just under MongoDB's 16MB limit
     MIN_CHUNK_TARGET_BYTES = 512 * 1024  # 512KB fallback to keep splits practical
     DEFAULT_CHUNK_INSERT_BATCH_SIZE = 50
+    DEFAULT_CHUNK_ROW_LIMIT = 100
+    DEFAULT_RESULT_ROW_LIMIT = 1000
 
     def __init__(
         self,
@@ -31,6 +33,8 @@ class AnalysisQueryResultStore:
         max_document_bytes: Optional[int] = None,
         chunk_target_bytes: Optional[int] = None,
         chunk_insert_batch_size: Optional[int] = None,
+        chunk_row_limit: Optional[int] = None,
+        max_result_rows: Optional[int] = None,
     ) -> None:
         self._client = db_client or MongoClient(Config.MONGO_URI)
         self._db = self._client[Config.DATABASE_NAME]
@@ -51,6 +55,10 @@ class AnalysisQueryResultStore:
         self._chunk_target_bytes = max(lower_bound, bounded_target)
         requested_batch = chunk_insert_batch_size or self.DEFAULT_CHUNK_INSERT_BATCH_SIZE
         self._chunk_insert_batch_size = max(1, requested_batch)
+        requested_chunk_rows = chunk_row_limit or self.DEFAULT_CHUNK_ROW_LIMIT
+        self._chunk_row_limit = max(1, requested_chunk_rows)
+        requested_result_limit = max_result_rows or self.DEFAULT_RESULT_ROW_LIMIT
+        self._max_result_rows = max(1, requested_result_limit)
 
         self._ensure_indexes()
         self._ensure_chunk_indexes()
@@ -91,10 +99,15 @@ class AnalysisQueryResultStore:
             raise ValueError("plan_id is required to store analysis results.")
 
         rows = dataframe.to_dict(orient="records")
+        original_record_count = int(len(rows))
+        if original_record_count > self._max_result_rows:
+            rows = rows[: self._max_result_rows]
+        truncated_record_count = original_record_count - len(rows)
         document = {
             "plan_id": plan_id,
             "plan_name": plan_name,
-            "record_count": int(len(dataframe)),
+            "record_count": int(len(rows)),
+            "original_record_count": original_record_count,
             "columns": list(dataframe.columns),
             "join_columns": list(join_columns),
             "join_strategy": join_strategy,
@@ -103,7 +116,10 @@ class AnalysisQueryResultStore:
             "analysis_summary": self._sanitize(analysis_summary or {}),
             "metadata": self._sanitize(metadata or {}),
             "updated_at": datetime.now(timezone.utc),
+            "results_truncated": bool(truncated_record_count),
         }
+        if truncated_record_count:
+            document["truncated_record_count"] = truncated_record_count
 
         document = self._persist_document(plan_id, document)
         return document
@@ -253,17 +269,21 @@ class AnalysisQueryResultStore:
 
         for row in rows:
             candidate_rows = current_rows + [row]
-            candidate_doc = self._chunk_document(
-                plan_id=plan_id,
-                index=chunk_index,
-                rows=candidate_rows,
-                timestamp=timestamp,
-            )
-            candidate_size = self._estimate_bson_size(candidate_doc)
+            row_limit_reached = len(candidate_rows) > self._chunk_row_limit
+            candidate_size = None
 
-            if candidate_size <= self._chunk_target_bytes:
-                current_rows = candidate_rows
-                continue
+            if not row_limit_reached:
+                candidate_doc = self._chunk_document(
+                    plan_id=plan_id,
+                    index=chunk_index,
+                    rows=candidate_rows,
+                    timestamp=timestamp,
+                )
+                candidate_size = self._estimate_bson_size(candidate_doc)
+
+                if candidate_size <= self._chunk_target_bytes:
+                    current_rows = candidate_rows
+                    continue
 
             if not current_rows:
                 raise ValueError(
