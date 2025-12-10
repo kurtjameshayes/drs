@@ -1,5 +1,5 @@
 import requests
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set
 from core.base_connector import BaseConnector
 import logging
 import time
@@ -187,44 +187,118 @@ class CensusConnector(BaseConnector):
         """
         Replace column headers with descriptions from the attr_name collection.
         """
+        if not result:
+            return result
+        
         attr_lookup = self._get_attr_lookup()
         if not attr_lookup:
             return result
-        
-        records = result.get("data")
-        if not isinstance(records, list) or not records:
-            return result
-        
-        schema = result.get("schema", {})
-        fields = schema.get("fields", []) if isinstance(schema, dict) else []
-        
-        headers = [
-            field.get("name") for field in fields
-            if isinstance(field, dict) and field.get("name")
+
+        dataset = self._extract_dataset_from_parameters(parameters)
+
+        schema = result.get("schema")
+        schema_fields: List[Dict[str, Any]] = []
+        if isinstance(schema, dict):
+            fields = schema.get("fields")
+            if isinstance(fields, list):
+                schema_fields = [field for field in fields if isinstance(field, dict)]
+
+        column_names = [
+            field.get("name") for field in schema_fields if field.get("name")
         ]
-        if not headers:
-            # Fallback to keys from the first record if schema is missing.
-            headers = list(records[0].keys())
-        
-        header_map = attr_lookup.get_descriptions(headers)
-        if not header_map:
+
+        records_container = result.get("data")
+        if isinstance(records_container, dict):
+            records_list = records_container.get("data")
+        else:
+            records_list = records_container
+        if not isinstance(records_list, list):
+            records_list = []
+
+        if not column_names:
+            first_record = next(
+                (record for record in records_list if isinstance(record, dict) and record),
+                None,
+            )
+            if not first_record:
+                return result
+            column_names = list(first_record.keys())
+
+        description_map = attr_lookup.get_descriptions(column_names)
+        if not description_map:
             return result
-        
-        renamed_records = []
-        for record in records:
-            renamed_record = {}
-            for key, value in record.items():
-                new_key = header_map.get(key, key)
-                renamed_record[new_key] = value
-            renamed_records.append(renamed_record)
-        result["data"] = renamed_records
-        
-        if isinstance(fields, list):
-            for field in fields:
-                name = field.get("name")
-                if name in header_map:
-                    field["name"] = header_map[name]
-        
+
+        attribute_descriptions = {
+            code: desc
+            for code, desc in description_map.items()
+            if self._is_valid_description(desc)
+        }
+
+        used_names: Set[str] = set(column_names)
+        rename_map: Dict[str, str] = {}
+        conflicts: List[str] = []
+        for code in column_names:
+            description = description_map.get(code)
+            if not self._is_valid_description(description):
+                continue
+            candidate_name = description
+            if candidate_name not in used_names:
+                rename_map[code] = candidate_name
+                used_names.add(candidate_name)
+            else:
+                conflicts.append(code)
+
+        metadata = result.setdefault("metadata", {})
+        metadata.setdefault("column_description_source", "attr_name")
+        if attribute_descriptions:
+            metadata.setdefault("attribute_descriptions", {}).update(attribute_descriptions)
+        if conflicts:
+            conflict_store = metadata.setdefault("column_name_conflicts", [])
+            for code in conflicts:
+                if code not in conflict_store:
+                    conflict_store.append(code)
+
+        if not rename_map:
+            return result
+
+        # Rename every record in-place.
+        records = result.get("data")
+        if isinstance(records, dict):
+            data_rows = records.get("data")
+            if isinstance(data_rows, list):
+                for record in data_rows:
+                    if not isinstance(record, dict):
+                        continue
+                    for original, friendly in rename_map.items():
+                        if original in record:
+                            record[friendly] = record.pop(original)
+        elif isinstance(records, list):
+            for record in records:
+                if not isinstance(record, dict):
+                    continue
+                for original, friendly in rename_map.items():
+                    if original in record:
+                        record[friendly] = record.pop(original)
+
+        # Align schema with renamed columns when possible.
+        for field in schema_fields:
+            original_name = field.get("name")
+            if original_name in rename_map:
+                field["name"] = rename_map[original_name]
+
+        overrides = metadata.setdefault("column_name_overrides", {})
+        overrides.update(rename_map)
+        if dataset:
+            metadata.setdefault("dataset", dataset)
+        metadata.setdefault("notes", [])
+        note = (
+            f"Column names sourced from attr_name for dataset '{dataset}'"
+            if dataset
+            else "Column names sourced from attr_name"
+        )
+        if note not in metadata["notes"]:
+            metadata["notes"].append(note)
+
         return result
     
     def get_capabilities(self) -> Dict[str, Any]:
@@ -294,6 +368,35 @@ class CensusConnector(BaseConnector):
                 self._attr_lookup_unavailable = True
                 return None
         return self._attr_lookup
+
+    def _extract_dataset_from_parameters(self, parameters: Optional[Dict[str, Any]]) -> Optional[str]:
+        """
+        Retrieve the dataset identifier from connector parameters when available.
+        """
+        if not isinstance(parameters, dict):
+            return None
+        dataset = parameters.get("dataset")
+        if dataset is None:
+            return None
+        if isinstance(dataset, str):
+            dataset = dataset.strip()
+            return dataset or None
+        return str(dataset)
+
+    @staticmethod
+    def _is_valid_description(description: Optional[str]) -> bool:
+        """
+        Ensure attr_name descriptions are usable as column headers.
+        """
+        if not isinstance(description, str):
+            return False
+        trimmed = description.strip()
+        if not trimmed:
+            return False
+        lowered = trimmed.lower()
+        if lowered in {"n/a", "na", "none", "null"}:
+            return False
+        return True
 
 
 class AttrNameLookup:
