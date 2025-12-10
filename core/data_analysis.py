@@ -18,6 +18,24 @@ class DataAnalysisEngine:
     predictive modeling helpers.
     """
 
+    def _select_columns(
+        self,
+        df: pd.DataFrame,
+        columns: List[str],
+        context: str = "",
+    ) -> pd.DataFrame:
+        """
+        Safely select columns and augment KeyError messages with available columns.
+        """
+        try:
+            return df[columns]
+        except KeyError as err:
+            available = list(df.columns)
+            context_suffix = f" for {context}" if context else ""
+            raise KeyError(
+                f"{err}. Available columns{context_suffix}: {available}"
+            ) from err
+
     def basic_statistics(self, df: pd.DataFrame) -> Dict[str, Any]:
         numeric_df = df.select_dtypes(include="number")
         categorical_df = df.select_dtypes(exclude="number")
@@ -65,7 +83,11 @@ class DataAnalysisEngine:
             if not col_x or not col_y:
                 raise ValueError("comparisons entries require 'x' and 'y' keys")
 
-            clean_df = df[[col_x, col_y]].dropna()
+            clean_df = self._select_columns(
+                df,
+                [col_x, col_y],
+                context=f"inferential_analysis (x={col_x}, y={col_y})",
+            ).dropna()
             if clean_df.empty:
                 results.append({
                     "x": col_x,
@@ -104,7 +126,11 @@ class DataAnalysisEngine:
         freq: Optional[str] = None,
         rolling_window: int = 7,
     ) -> Dict[str, Any]:
-        ts_df = df[[time_column, target_column]].dropna()
+        ts_df = self._select_columns(
+            df,
+            [time_column, target_column],
+            context=f"time_series_analysis ({time_column}, {target_column})",
+        ).dropna()
         if ts_df.empty:
             raise ValueError("No data available for time series analysis")
 
@@ -134,7 +160,11 @@ class DataAnalysisEngine:
         test_size: float = 0.2,
         random_state: int = 42,
     ) -> Dict[str, Any]:
-        dataset = df[features + [target]].dropna()
+        dataset = self._select_columns(
+            df,
+            features + [target],
+            context=f"linear_regression (target={target})",
+        ).dropna()
         if len(dataset) < 2:
             raise ValueError("Not enough rows for regression analysis")
 
@@ -171,7 +201,11 @@ class DataAnalysisEngine:
         test_size: float = 0.2,
         random_state: int = 42,
     ) -> Dict[str, Any]:
-        dataset = df[features + [target]].dropna()
+        dataset = self._select_columns(
+            df,
+            features + [target],
+            context=f"random_forest_regression (target={target})",
+        ).dropna()
         if len(dataset) < 5:
             raise ValueError("Not enough rows for random forest regression")
 
@@ -204,7 +238,11 @@ class DataAnalysisEngine:
         features: List[str],
         n_components: int = 2,
     ) -> Dict[str, Any]:
-        dataset = df[features].dropna()
+        dataset = self._select_columns(
+            df,
+            features,
+            context="multivariate_analysis features",
+        ).dropna()
         if dataset.empty:
             raise ValueError("No data available for multivariate analysis")
 
