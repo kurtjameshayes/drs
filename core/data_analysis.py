@@ -25,16 +25,40 @@ class DataAnalysisEngine:
         context: str = "",
     ) -> pd.DataFrame:
         """
-        Safely select columns and augment KeyError messages with available columns.
+        Safely select columns (case-insensitive) and augment KeyError messages with
+        available columns. Returned DataFrame preserves the caller-provided column
+        names so downstream lookups remain consistent.
         """
-        try:
-            return df[columns]
-        except KeyError as err:
-            available = list(df.columns)
-            context_suffix = f" for {context}" if context else ""
+        available = list(df.columns)
+        context_suffix = f" for {context}" if context else ""
+
+        normalized_lookup = {
+            str(col).casefold(): col for col in available
+        }
+        resolved_columns: List[Any] = []
+        missing_columns: List[str] = []
+
+        for requested in columns:
+            if requested in df.columns:
+                resolved_columns.append(requested)
+                continue
+
+            lookup_key = str(requested).casefold()
+            matched = normalized_lookup.get(lookup_key)
+            if matched is not None:
+                resolved_columns.append(matched)
+            else:
+                missing_columns.append(requested)
+
+        if missing_columns:
             raise KeyError(
-                f"{err}. Available columns{context_suffix}: {available}"
-            ) from err
+                f"Columns not found{context_suffix}: {missing_columns}. "
+                f"Available columns: {available}"
+            )
+
+        subset = df[resolved_columns].copy()
+        subset.columns = columns
+        return subset
 
     def basic_statistics(self, df: pd.DataFrame) -> Dict[str, Any]:
         numeric_df = df.select_dtypes(include="number")
