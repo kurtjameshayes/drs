@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, Iterator, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -21,6 +21,7 @@ class AnalysisQueryResultStore:
 
     DEFAULT_MAX_DOCUMENT_BYTES = 15 * 1024 * 1024  # just under MongoDB's 16MB limit
     MIN_CHUNK_TARGET_BYTES = 512 * 1024  # 512KB fallback to keep splits practical
+    DEFAULT_CHUNK_INSERT_BATCH_SIZE = 50
 
     def __init__(
         self,
@@ -29,6 +30,7 @@ class AnalysisQueryResultStore:
         chunk_collection_name: str = "analysis_query_result_chunks",
         max_document_bytes: Optional[int] = None,
         chunk_target_bytes: Optional[int] = None,
+        chunk_insert_batch_size: Optional[int] = None,
     ) -> None:
         self._client = db_client or MongoClient(Config.MONGO_URI)
         self._db = self._client[Config.DATABASE_NAME]
@@ -47,6 +49,8 @@ class AnalysisQueryResultStore:
         )
         bounded_target = min(requested_target, upper_bound)
         self._chunk_target_bytes = max(lower_bound, bounded_target)
+        requested_batch = chunk_insert_batch_size or self.DEFAULT_CHUNK_INSERT_BATCH_SIZE
+        self._chunk_insert_batch_size = max(1, requested_batch)
 
         self._ensure_indexes()
         self._ensure_chunk_indexes()
@@ -193,16 +197,41 @@ class AnalysisQueryResultStore:
         """
         Write the results list into multiple documents so each stays below the limit.
         """
-        chunk_payloads = self._chunk_rows(plan_id, rows)
+        row_buffer = rows if isinstance(rows, list) else list(rows)
+        chunk_meta = self._store_chunk_documents(plan_id, row_buffer)
+        return chunk_meta
+
+    def _store_chunk_documents(
+        self,
+        plan_id: str,
+        rows: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """
+        Stream chunk documents to MongoDB in batches to keep memory bounded.
+        """
+        chunk_iterator = self._chunk_rows(plan_id, rows)
         self._delete_existing_chunks(plan_id)
 
-        if chunk_payloads:
-            self.chunk_collection.insert_many(chunk_payloads)
+        batch: List[Dict[str, Any]] = []
+        chunk_count = 0
+        chunk_record_counts: List[int] = []
+
+        for chunk_doc in chunk_iterator:
+            batch.append(chunk_doc)
+            chunk_count += 1
+            chunk_record_counts.append(chunk_doc["record_count"])
+
+            if len(batch) >= self._chunk_insert_batch_size:
+                self.chunk_collection.insert_many(batch)
+                batch = []
+
+        if batch:
+            self.chunk_collection.insert_many(batch)
 
         return {
             "collection": self.chunk_collection.name,
-            "chunk_count": len(chunk_payloads),
-            "chunk_record_counts": [payload["record_count"] for payload in chunk_payloads],
+            "chunk_count": chunk_count,
+            "chunk_record_counts": chunk_record_counts,
             "total_records": len(rows),
             "max_document_bytes": self._max_document_bytes,
         }
@@ -211,20 +240,18 @@ class AnalysisQueryResultStore:
         self,
         plan_id: str,
         rows: Sequence[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
+    ) -> Iterator[Dict[str, Any]]:
         """
         Split the sanitized rows into BSON-aware chunks under the configured limit.
         """
-        prepared_rows = list(rows)
-        if not prepared_rows:
-            return []
+        if not rows:
+            return
 
-        chunks: List[Dict[str, Any]] = []
         current_rows: List[Dict[str, Any]] = []
         chunk_index = 0
         timestamp = datetime.now(timezone.utc)
 
-        for row in prepared_rows:
+        for row in rows:
             candidate_rows = current_rows + [row]
             candidate_doc = self._chunk_document(
                 plan_id=plan_id,
@@ -244,28 +271,22 @@ class AnalysisQueryResultStore:
                     "limit. Remove large intermediate columns before storing results."
                 )
 
-            chunks.append(
-                self._chunk_document(
-                    plan_id=plan_id,
-                    index=chunk_index,
-                    rows=current_rows,
-                    timestamp=timestamp,
-                )
+            yield self._chunk_document(
+                plan_id=plan_id,
+                index=chunk_index,
+                rows=current_rows,
+                timestamp=timestamp,
             )
             chunk_index += 1
             current_rows = [row]
 
         if current_rows:
-            chunks.append(
-                self._chunk_document(
-                    plan_id=plan_id,
-                    index=chunk_index,
-                    rows=current_rows,
-                    timestamp=timestamp,
-                )
+            yield self._chunk_document(
+                plan_id=plan_id,
+                index=chunk_index,
+                rows=current_rows,
+                timestamp=timestamp,
             )
-
-        return chunks
 
     @staticmethod
     def _chunk_document(
