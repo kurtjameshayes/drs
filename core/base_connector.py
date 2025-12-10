@@ -111,3 +111,19 @@ class BaseConnector(ABC):
             "query_parameters": query_params,
             "version": "1.0"
         }
+
+    def process_result(self, result: Dict[str, Any], parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Post-process a connector result before returning it to callers.
+
+        Connectors can override this hook to add connector-specific formatting
+        or enrichment. By default no changes are applied.
+
+        Args:
+            result: The result payload returned from `query`.
+            parameters: The parameters used to generate the query.
+
+        Returns:
+            Dict containing the (optionally) transformed result.
+        """
+        return result

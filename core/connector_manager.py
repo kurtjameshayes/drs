@@ -117,6 +117,12 @@ class ConnectorManager:
         
         try:
             result = connector.query(parameters)
+            try:
+                result = connector.process_result(result, parameters)
+            except Exception as process_error:
+                logger.error(
+                    f"Result processing failed for {source_id}: {process_error}"
+                )
             return {
                 "success": True,
                 "data": result,
