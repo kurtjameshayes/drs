@@ -19,7 +19,9 @@ class QueryResult:
     
     def _create_indexes(self):
         """Create indexes for efficient querying and TTL."""
-        self.collection.create_index("query_hash", unique=True)
+        # Existing deployments created this index as sparse; keep it sparse to avoid
+        # conflicts when re-running migrations on populated databases.
+        self.collection.create_index("query_hash", unique=True, sparse=True)
         self.collection.create_index("source_id")
         self.collection.create_index(
             "expires_at",
