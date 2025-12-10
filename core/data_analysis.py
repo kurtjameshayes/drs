@@ -1,4 +1,5 @@
 from typing import Dict, Any, List, Optional
+import logging
 
 import pandas as pd
 import numpy as np
@@ -9,6 +10,8 @@ from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 
+logger = logging.getLogger(__name__)
+
 
 class DataAnalysisEngine:
     """
@@ -17,6 +20,17 @@ class DataAnalysisEngine:
     regressions, time-series utilities, multivariate techniques, and
     predictive modeling helpers.
     """
+
+    def _profile_dataframe(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """
+        Summarize key dataframe attributes for logging/monitoring.
+        """
+        memory_bytes = int(df.memory_usage(deep=True).sum()) if not df.empty else 0
+        return {
+            "rows": int(len(df)),
+            "columns": int(df.shape[1]),
+            "memory_kb": round(memory_bytes / 1024, 2),
+        }
 
     def _select_columns(
         self,
@@ -315,20 +329,69 @@ class DataAnalysisEngine:
         }
         """
         results: Dict[str, Any] = {}
+        df_profile = self._profile_dataframe(df)
+        suite_steps = {
+            "basic_statistics",
+            "exploratory",
+            "inferential_tests",
+            "time_series",
+            "linear_regression",
+            "random_forest",
+            "multivariate",
+            "predictive",
+        }
+        requested_steps = [key for key in suite_steps if plan.get(key)]
+        logger.info(
+            "Starting analysis suite plan_keys=%s steps=%s rows=%s cols=%s approx_mem_kb=%.2f",
+            list(plan.keys()),
+            requested_steps,
+            df_profile["rows"],
+            df_profile["columns"],
+            df_profile["memory_kb"],
+        )
 
         if plan.get("basic_statistics"):
-            results["basic_statistics"] = self.basic_statistics(df)
+            logger.info("Running analysis step basic_statistics")
+            stats_payload = self.basic_statistics(df)
+            results["basic_statistics"] = stats_payload
+            logger.info(
+                "Finished basic_statistics numeric_fields=%s categorical_fields=%s",
+                len(stats_payload.get("numeric_summary", {})),
+                len(stats_payload.get("categorical_summary", {})),
+            )
 
         if plan.get("exploratory"):
-            results["exploratory_analysis"] = self.exploratory_analysis(df)
+            logger.info("Running analysis step exploratory_analysis")
+            exploratory_payload = self.exploratory_analysis(df)
+            results["exploratory_analysis"] = exploratory_payload
+            logger.info(
+                "Finished exploratory_analysis sample_records=%s distributions=%s",
+                len(exploratory_payload.get("sample_records", [])),
+                len(exploratory_payload.get("distribution", {})),
+            )
 
         if plan.get("inferential_tests"):
-            results["inferential_analysis"] = self.inferential_analysis(
-                df, plan["inferential_tests"], plan.get("alpha", 0.05)
+            comparisons = plan["inferential_tests"]
+            logger.info("Running inferential_analysis comparisons=%s alpha=%s",
+                        len(comparisons), plan.get("alpha", 0.05))
+            inferential_results = self.inferential_analysis(
+                df, comparisons, plan.get("alpha", 0.05)
+            )
+            results["inferential_analysis"] = inferential_results
+            logger.info(
+                "Finished inferential_analysis successful_tests=%s",
+                len([r for r in inferential_results if "error" not in r]),
             )
 
         if plan.get("time_series"):
             ts_cfg = plan["time_series"]
+            logger.info(
+                "Running time_series_analysis time_column=%s target=%s freq=%s window=%s",
+                ts_cfg["time_column"],
+                ts_cfg["target_column"],
+                ts_cfg.get("freq"),
+                ts_cfg.get("rolling_window", 7),
+            )
             results["time_series_analysis"] = self.time_series_analysis(
                 df,
                 time_column=ts_cfg["time_column"],
@@ -339,6 +402,11 @@ class DataAnalysisEngine:
 
         if plan.get("linear_regression"):
             lr_cfg = plan["linear_regression"]
+            logger.info(
+                "Running linear_regression features=%s target=%s",
+                lr_cfg["features"],
+                lr_cfg["target"],
+            )
             results["linear_regression"] = self.linear_regression(
                 df,
                 features=lr_cfg["features"],
@@ -349,6 +417,12 @@ class DataAnalysisEngine:
 
         if plan.get("random_forest"):
             rf_cfg = plan["random_forest"]
+            logger.info(
+                "Running random_forest_regression features=%s target=%s estimators=%s",
+                rf_cfg["features"],
+                rf_cfg["target"],
+                rf_cfg.get("n_estimators", 200),
+            )
             results["random_forest_regression"] = self.random_forest_regression(
                 df,
                 features=rf_cfg["features"],
@@ -361,6 +435,11 @@ class DataAnalysisEngine:
 
         if plan.get("multivariate"):
             mv_cfg = plan["multivariate"]
+            logger.info(
+                "Running multivariate_analysis features=%s n_components=%s",
+                mv_cfg["features"],
+                mv_cfg.get("n_components", 2),
+            )
             results["multivariate_analysis"] = self.multivariate_analysis(
                 df,
                 features=mv_cfg["features"],
@@ -369,6 +448,12 @@ class DataAnalysisEngine:
 
         if plan.get("predictive"):
             pred_cfg = plan["predictive"]
+            logger.info(
+                "Running predictive_analysis model_type=%s features=%s target=%s",
+                pred_cfg.get("model_type", "linear"),
+                pred_cfg["features"],
+                pred_cfg["target"],
+            )
             results["predictive_analysis"] = self.predictive_analysis(
                 df,
                 features=pred_cfg["features"],
@@ -377,4 +462,5 @@ class DataAnalysisEngine:
                 **{k: v for k, v in pred_cfg.items() if k not in {"features", "target", "model_type"}}
             )
 
+        logger.info("Completed analysis suite output_sections=%s", list(results.keys()))
         return results
