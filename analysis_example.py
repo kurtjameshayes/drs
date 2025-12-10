@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import argparse
 from pprint import pprint
-from typing import List, Sequence
+from typing import Any, Dict, List, Sequence
 
+from pymongo import MongoClient
+from pymongo.errors import PyMongoError
+
+from config import Config
 from core.query_engine import QueryEngine
 
 
@@ -40,12 +44,63 @@ def build_query_specs_from_saved_queries(
     return specs
 
 
+def load_analysis_plan(plan_id: str, collection_name: str = "analysis_plans") -> Dict[str, Any]:
+    """Fetch an analysis plan definition from MongoDB."""
+
+    try:
+        with MongoClient(Config.MONGO_URI) as client:
+            collection = client[Config.DATABASE_NAME][collection_name]
+            plan_doc = (
+                collection.find_one({"plan_id": plan_id})
+                or collection.find_one({"_id": plan_id})
+                or collection.find_one({"name": plan_id})
+            )
+    except PyMongoError as exc:
+        raise RuntimeError(
+            f"Failed to load analysis plan '{plan_id}' from MongoDB: {exc}"
+        ) from exc
+
+    if not plan_doc:
+        raise ValueError(
+            f"Analysis plan '{plan_id}' not found in collection '{collection_name}'."
+        )
+
+    plan_payload: Dict[str, Any] | None = None
+    for key in ("plan", "analysis_plan", "definition"):
+        candidate = plan_doc.get(key)
+        if isinstance(candidate, dict):
+            plan_payload = candidate
+            break
+
+    if plan_payload is None:
+        metadata_keys = {
+            "_id",
+            "plan_id",
+            "plan_name",
+            "name",
+            "description",
+            "created_at",
+            "updated_at",
+            "tags",
+            "collection",
+        }
+        plan_payload = {
+            key: value for key, value in plan_doc.items() if key not in metadata_keys
+        }
+
+    if not plan_payload:
+        raise ValueError(
+            f"Analysis plan document '{plan_id}' does not contain a valid plan definition."
+        )
+
+    return plan_payload
+
+
 def build_analysis(
     query_ids: Sequence[str],
     join_on: Sequence[str],
     how: str,
-    target_column: str,
-    feature_columns: Sequence[str],
+    analysis_plan: Dict[str, Any],
 ):
     if len(query_ids) < 2:
         raise ValueError("Provide at least two stored query IDs to build a join.")
@@ -58,20 +113,6 @@ def build_analysis(
         join_on=list(join_on),
         how=how,
     )
-
-    analysis_plan = {
-        "basic_statistics": True,
-        "linear_regression": {
-            "features": list(feature_columns),
-            "target": target_column,
-        },
-        "predictive": {
-            "features": list(feature_columns),
-            "target": target_column,
-            "model_type": "forest",
-            "n_estimators": 50,
-        },
-    }
 
     analysis_result = engine.analyze_queries(
         queries=query_specs,
@@ -111,21 +152,28 @@ def parse_args():
         help="Join strategy passed to pandas.merge",
     )
     parser.add_argument(
-        "--target-column",
-        default="population",
-        help="Column to predict in regression/predictive analyses",
+        "--analysis-plan-id",
+        required=True,
+        help="Identifier of the analysis plan stored in MongoDB",
     )
     parser.add_argument(
-        "--feature-columns",
-        nargs="+",
-        default=["corn_value"],
-        help="Feature columns used for modeling",
+        "--analysis-plan-collection",
+        default="analysis_plans",
+        help="MongoDB collection that stores analysis plan documents",
     )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+
+    try:
+        analysis_plan = load_analysis_plan(
+            plan_id=args.analysis_plan_id,
+            collection_name=args.analysis_plan_collection,
+        )
+    except (ValueError, RuntimeError) as exc:
+        raise SystemExit(str(exc))
 
     (
         engine,
@@ -136,8 +184,7 @@ def main():
         query_ids=args.query_ids,
         join_on=args.join_on,
         how=args.how,
-        target_column=args.target_column,
-        feature_columns=args.feature_columns,
+        analysis_plan=analysis_plan,
     )
 
     print("Saved queries executed:")
