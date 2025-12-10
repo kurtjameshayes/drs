@@ -322,6 +322,15 @@ class QueryEngine:
         if not join_keys:
             raise ValueError("join_on parameter is required")
 
+        logger.info(
+            "execute_queries_to_dataframe start query_count=%s join_keys=%s how=%s aggregation=%s use_cache=%s",
+            len(queries),
+            join_keys,
+            how,
+            bool(aggregation),
+            use_cache,
+        )
+
         dataframes = []
         for spec in queries:
             source_id = spec.get("source_id")
@@ -332,26 +341,74 @@ class QueryEngine:
             alias = spec.get("alias", source_id)
             rename_map = spec.get("rename_columns")
 
+            logger.info(
+                "Executing query for dataframe alias=%s source_id=%s", alias, source_id
+            )
             result = self.execute_query(source_id, parameters, use_cache)
             if not result.get("success"):
+                logger.error(
+                    "Query failed for %s alias=%s error=%s",
+                    source_id,
+                    alias,
+                    result.get("error"),
+                )
                 raise ValueError(f"Query failed for {source_id}: {result.get('error')}")
 
             records = self._extract_records(result)
+            logger.info(
+                "Query success alias=%s source=%s record_count=%s",
+                alias,
+                result.get("source"),
+                len(records),
+            )
+
             df = pd.DataFrame(records)
 
             if rename_map:
+                logger.info(
+                    "Applying column rename for alias=%s columns=%s",
+                    alias,
+                    list(rename_map.keys()),
+                )
                 df = df.rename(columns=rename_map)
 
             missing_keys = [key for key in join_keys if key not in df.columns]
             if missing_keys:
+                logger.error(
+                    "Join keys missing alias=%s missing=%s available_columns=%s",
+                    alias,
+                    missing_keys,
+                    list(df.columns),
+                )
                 raise ValueError(
                     f"Join keys {missing_keys} not present in query result for {source_id}"
                 )
 
+            df_stats = self._dataframe_profile(df)
+            logger.info(
+                "Dataframe ready alias=%s rows=%s cols=%s approx_mem_kb=%.2f",
+                alias,
+                df_stats["rows"],
+                df_stats["columns"],
+                df_stats["memory_kb"],
+            )
+
             dataframes.append({"alias": alias, "df": df})
 
+        logger.info(
+            "Joining %s dataframes on keys=%s using how=%s",
+            len(dataframes),
+            join_keys,
+            how,
+        )
         joined_df = dataframes[0]["df"]
+        logger.info(
+            "Initial join base alias=%s stats=%s",
+            dataframes[0]["alias"],
+            self._dataframe_profile(joined_df),
+        )
         for entry in dataframes[1:]:
+            before_stats = self._dataframe_profile(joined_df)
             joined_df = pd.merge(
                 joined_df,
                 entry["df"],
@@ -359,10 +416,35 @@ class QueryEngine:
                 how=how,
                 suffixes=("", f"_{entry['alias']}"),
             )
+            after_stats = self._dataframe_profile(joined_df)
+            logger.info(
+                "Joined alias=%s rows %s->%s cols_now=%s",
+                entry["alias"],
+                before_stats["rows"],
+                after_stats["rows"],
+                after_stats["columns"],
+            )
 
         if aggregation:
+            before_stats = self._dataframe_profile(joined_df)
             joined_df = self._apply_aggregation(joined_df, aggregation)
+            after_stats = self._dataframe_profile(joined_df)
+            logger.info(
+                "Applied aggregation group_by=%s metric_count=%s rows %s->%s cols_now=%s",
+                aggregation.get("group_by"),
+                len(aggregation.get("metrics", [])),
+                before_stats["rows"],
+                after_stats["rows"],
+                after_stats["columns"],
+            )
 
+        final_stats = self._dataframe_profile(joined_df)
+        logger.info(
+            "execute_queries_to_dataframe complete rows=%s cols=%s approx_mem_kb=%.2f",
+            final_stats["rows"],
+            final_stats["columns"],
+            final_stats["memory_kb"],
+        )
         return joined_df
 
     def analyze_queries(
@@ -378,6 +460,16 @@ class QueryEngine:
         Build a DataFrame from multiple queries and run an analysis plan.
         Returns both the DataFrame and the computed analytical summaries.
         """
+        join_keys = [join_on] if isinstance(join_on, str) else join_on
+        logger.info(
+            "analyze_queries start query_count=%s join_keys=%s plan_keys=%s aggregation=%s use_cache=%s",
+            len(queries),
+            join_keys,
+            list(analysis_plan.keys()),
+            bool(aggregation),
+            use_cache,
+        )
+
         dataframe = self.execute_queries_to_dataframe(
             queries=queries,
             join_on=join_on,
@@ -385,8 +477,19 @@ class QueryEngine:
             aggregation=aggregation,
             use_cache=use_cache,
         )
+        df_stats = self._dataframe_profile(dataframe)
+        logger.info(
+            "Dataframe ready for analysis rows=%s cols=%s approx_mem_kb=%.2f",
+            df_stats["rows"],
+            df_stats["columns"],
+            df_stats["memory_kb"],
+        )
 
         analysis_results = self.analysis_engine.run_suite(dataframe, analysis_plan)
+        logger.info(
+            "analyze_queries complete analysis_sections=%s",
+            list(analysis_results.keys()),
+        )
         return {
             "dataframe": dataframe,
             "analysis": analysis_results,
@@ -400,6 +503,17 @@ class QueryEngine:
         else:
             data = payload
         return data or []
+
+    @staticmethod
+    def _dataframe_profile(df: pd.DataFrame) -> Dict[str, Any]:
+        if df is None or df.empty:
+            return {"rows": 0, "columns": 0, "memory_kb": 0.0}
+        memory_bytes = int(df.memory_usage(deep=True).sum())
+        return {
+            "rows": int(len(df)),
+            "columns": int(df.shape[1]),
+            "memory_kb": round(memory_bytes / 1024, 2),
+        }
 
     @staticmethod
     def _apply_aggregation(df: pd.DataFrame, aggregation: Dict[str, Any]) -> pd.DataFrame:
