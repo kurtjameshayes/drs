@@ -75,3 +75,44 @@ def test_save_joined_results_overwrites_existing_document():
     assert persisted["record_count"] == len(second_df)
     assert persisted["results"][0]["state"] == "TX"
     assert persisted["metadata"]["version"] == 2
+
+
+def test_save_joined_results_spills_large_payload_into_chunks():
+    client = mongomock.MongoClient()
+    store = AnalysisQueryResultStore(
+        db_client=client,
+        max_document_bytes=2_000,
+        chunk_target_bytes=1_000,
+    )
+
+    long_text = "x" * 400
+    dataframe = pd.DataFrame(
+        [{"state": f"ST{i}", "year": 2020, "value": f"{long_text}{i}"} for i in range(10)]
+    )
+
+    stored_doc = store.save_joined_results(
+        plan_id="plan-large",
+        plan_name="Large Plan",
+        join_columns=["state"],
+        join_strategy="inner",
+        query_specs=[{"source_id": "census_api", "parameters": {}}],
+        dataframe=dataframe,
+        analysis_summary=None,
+        metadata=None,
+    )
+
+    persisted = store.collection.find_one({"plan_id": "plan-large"})
+    assert persisted is not None
+    assert persisted["results"] is None
+    assert persisted["results_stored_externally"] is True
+
+    external_meta = persisted["results_external"]
+    assert external_meta["chunk_count"] >= 2
+    assert external_meta["total_records"] == len(dataframe)
+
+    chunks = list(
+        store.chunk_collection.find({"plan_id": "plan-large"}).sort("chunk_index", 1)
+    )
+    assert len(chunks) == external_meta["chunk_count"]
+    assert sum(chunk["record_count"] for chunk in chunks) == len(dataframe)
+    assert stored_doc["results"] is None
