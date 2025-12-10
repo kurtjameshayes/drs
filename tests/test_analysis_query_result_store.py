@@ -116,3 +116,41 @@ def test_save_joined_results_spills_large_payload_into_chunks():
     assert len(chunks) == external_meta["chunk_count"]
     assert sum(chunk["record_count"] for chunk in chunks) == len(dataframe)
     assert stored_doc["results"] is None
+
+
+def test_save_joined_results_truncates_to_row_limit():
+    client = mongomock.MongoClient()
+    store = AnalysisQueryResultStore(db_client=client)
+    dataframe = pd.DataFrame(
+        [{"state": f"ST{i}", "year": 2020, "value": i} for i in range(1_200)]
+    )
+
+    store.save_joined_results(
+        plan_id="plan-truncate",
+        plan_name="Truncated Plan",
+        join_columns=["state"],
+        join_strategy="inner",
+        query_specs=[{"source_id": "census_api", "parameters": {}}],
+        dataframe=dataframe,
+        analysis_summary=None,
+        metadata=None,
+    )
+
+    persisted = store.collection.find_one({"plan_id": "plan-truncate"})
+    assert persisted is not None
+    assert persisted["record_count"] == 1_000
+    assert persisted["original_record_count"] == len(dataframe)
+    assert persisted["results_truncated"] is True
+    assert persisted["truncated_record_count"] == len(dataframe) - 1_000
+    assert len(persisted["results"]) == 1_000
+
+
+def test_chunk_rows_respects_row_limit():
+    client = mongomock.MongoClient()
+    store = AnalysisQueryResultStore(db_client=client, chunk_row_limit=100)
+
+    rows = [{"state": f"ST{i}", "year": 2020, "value": i} for i in range(205)]
+    chunk_docs = list(store._chunk_rows(plan_id="plan-chunk", rows=rows))
+
+    assert [doc["record_count"] for doc in chunk_docs] == [100, 100, 5]
+    assert chunk_docs[-1]["chunk_index"] == len(chunk_docs) - 1
