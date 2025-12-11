@@ -39,12 +39,26 @@ class FBICrimeConnector(BaseConnector):
                 - format: Response format (default: JSON)
         """
         super().__init__(config)
-        self.base_url = config.get('url', 'https://api.usa.gov/crime/fbi/sapi')
+        default_base_url = 'https://api.usa.gov/crime/fbi/sapi'
+        self.base_url = config.get('url', default_base_url).rstrip('/')
         self.api_key = config.get('api_key')
         self.format = config.get('format', 'JSON').upper()
         self.session = None
         self.max_retries = config.get('max_retries', 3)
         self.retry_delay = config.get('retry_delay', 1)
+
+        base_url_lower = self.base_url.lower()
+        api_namespace = config.get('api_namespace')
+        if api_namespace is None:
+            self.api_namespace = '' if 'cde' in base_url_lower else 'api'
+        else:
+            self.api_namespace = api_namespace.strip('/')
+
+        year_mode = config.get('year_mode')
+        if year_mode not in {'path', 'query'}:
+            self.year_mode = 'query' if 'cde' in base_url_lower else 'path'
+        else:
+            self.year_mode = year_mode
         
     def connect(self) -> bool:
         """
@@ -60,8 +74,13 @@ class FBICrimeConnector(BaseConnector):
             })
             
             # Test connection with a simple request
-            test_url = f"{self.base_url}/api/estimates/national/2020/2020"
             params = {'api_key': self.api_key}
+            test_url = self._build_request_url(
+                endpoint='estimates/national',
+                from_value='2020',
+                to_value='2020',
+                params=params
+            )
             
             full_url = self._compose_request_url(test_url, params)
             logger.info("Validating FBI Crime API connection url=%s", full_url)
@@ -119,24 +138,16 @@ class FBICrimeConnector(BaseConnector):
         
         try:
             endpoint = parameters.get('endpoint', 'estimates/national')
-            from_year = parameters.get('from', '2020')
-            to_year = parameters.get('to', '2020')
-            
-            # Build URL - FBI Crime Data API structure: /api/{endpoint}/{from_year}/{to_year}
-            if endpoint.startswith('api/'):
-                url = f"{self.base_url}/{endpoint}/{from_year}/{to_year}"
-            else:
-                url = f"{self.base_url}/api/{endpoint}/{from_year}/{to_year}"
-            
-            # Build query parameters
-            params = {'api_key': self.api_key}
-            
-            # Add other parameters (excluding endpoint, from, to which are in URL)
-            for key, value in parameters.items():
-                if key not in ['endpoint', 'from', 'to', 'api_key']:
-                    params[key] = value
-            
-            # Execute request with retry logic
+            from_year = parameters.get('from')
+            to_year = parameters.get('to')
+
+            if self.year_mode == 'path':
+                from_year = from_year or '2020'
+                to_year = to_year or '2020'
+
+            params = self._prepare_query_params(parameters)
+            url = self._build_request_url(endpoint, from_year, to_year, params)
+
             response = self._execute_with_retry(url, params)
             
             # Parse response
@@ -207,6 +218,71 @@ class FBICrimeConnector(BaseConnector):
                     logger.error(f"Request failed after {self.max_retries} attempts")
         
         raise last_exception
+
+    def _prepare_query_params(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Build the request parameters, excluding keys that are embedded in the path.
+        """
+        params = {'api_key': self.api_key}
+        for key, value in parameters.items():
+            if key not in {'endpoint', 'from', 'to', 'api_key'} and value is not None:
+                params[key] = value
+        return params
+
+    def _build_request_url(
+        self,
+        endpoint: str,
+        from_value: Optional[str],
+        to_value: Optional[str],
+        params: Dict[str, Any],
+    ) -> str:
+        """
+        Construct the request URL, adapting to the legacy SAPI (`/api/.../year/year`)
+        and the newer CDE endpoints that expect query parameters.
+        """
+        endpoint = (endpoint or '').strip()
+
+        if endpoint.startswith('http://') or endpoint.startswith('https://'):
+            url = endpoint
+        else:
+            clean_endpoint = endpoint.lstrip('/')
+            namespace = self.api_namespace.strip('/') if self.api_namespace else ''
+
+            if namespace:
+                if clean_endpoint.startswith(f"{namespace}/"):
+                    route = clean_endpoint
+                elif clean_endpoint == namespace:
+                    route = namespace
+                else:
+                    route = "/".join(part for part in [namespace, clean_endpoint] if part)
+            else:
+                route = clean_endpoint
+
+            parts: List[str] = [self.base_url]
+            if route:
+                parts.append(route)
+
+            if self.year_mode == 'path':
+                if from_value:
+                    parts.append(str(from_value))
+                if to_value:
+                    parts.append(str(to_value))
+
+            normalized_parts: List[str] = []
+            for idx, part in enumerate(parts):
+                if not part:
+                    continue
+                normalized_parts.append(part.rstrip('/') if idx == 0 else part.strip('/'))
+
+            url = "/".join(normalized_parts)
+
+        if self.year_mode == 'query':
+            if from_value and 'from' not in params:
+                params['from'] = from_value
+            if to_value and 'to' not in params:
+                params['to'] = to_value
+
+        return url
     
     def validate(self) -> bool:
         """
