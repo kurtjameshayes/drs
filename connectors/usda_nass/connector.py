@@ -50,12 +50,11 @@ class USDANASSConnector(BaseConnector):
                 "state_alpha": "IA",
                 "statisticcat_desc": "PRODUCTION"
             }
-            
-            response = requests.get(
-                f"{self.base_url}/api_GET",
-                params=test_params,
-                timeout=10
-            )
+            url = f"{self.base_url}/api_GET"
+            full_url = self._compose_request_url(url, test_params)
+            logger.info("Validating USDA NASS API access url=%s", full_url)
+
+            response = requests.get(url, params=test_params, timeout=10)
             
             return response.status_code == 200
         except Exception as e:
@@ -91,8 +90,16 @@ class USDANASSConnector(BaseConnector):
         # Execute query with retry logic
         for attempt in range(self.max_retries):
             try:
+                url = f"{self.base_url}/api_GET"
+                full_url = self._compose_request_url(url, query_params)
+                logger.info(
+                    "Executing USDA NASS API query attempt=%s url=%s",
+                    attempt + 1,
+                    full_url,
+                )
+
                 response = requests.get(
-                    f"{self.base_url}/api_GET",
+                    url,
                     params=query_params,
                     timeout=30
                 )

@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional
+from urllib.parse import urlencode
 from datetime import datetime
 
 class BaseConnector(ABC):
@@ -112,6 +113,25 @@ class BaseConnector(ABC):
             "version": "1.0"
         }
 
+    def _compose_request_url(self, url: str, params: Optional[Dict[str, Any]] = None) -> str:
+        """
+        Build a full query URL with encoded parameters for logging/debugging.
+        """
+        if not params:
+            return url
+
+        try:
+            filtered_params = {k: v for k, v in params.items() if v is not None}
+            query_string = urlencode(filtered_params, doseq=True)
+        except Exception:
+            query_string = ""
+
+        if query_string:
+            separator = "&" if "?" in url else "?"
+            return f"{url}{separator}{query_string}"
+
+        return f"{url} params={params}"
+    
     def process_result(self, result: Dict[str, Any], parameters: Dict[str, Any]) -> Dict[str, Any]:
         """
         Post-process a connector result before returning it to callers.
