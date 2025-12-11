@@ -84,6 +84,34 @@ def test_fbi_crime_connector_query_handles_cde_base_url(monkeypatch):
     assert "api_key" not in captured["params"]
 
 
+def test_fbi_crime_connector_query_handles_full_cde_endpoint(monkeypatch):
+    connector = FBICrimeConnector({"api_key": "token"})
+    connector.connected = True
+
+    captured = {}
+
+    def fake_execute(url, params):
+        captured["url"] = url
+        captured["params"] = params
+        return DummyResponse(200, json_data={"results": []})
+
+    monkeypatch.setattr(connector, "_execute_with_retry", fake_execute)
+
+    connector.query({
+        "endpoint": "https://api.usa.gov/crime/fbi/cde/arrest/national/all",
+        "from": "01-2023",
+        "to": "12-2023",
+        "type": "counts",
+    })
+
+    assert captured["url"] == "https://api.usa.gov/crime/fbi/cde/arrest/national/all"
+    assert captured["params"]["from"] == "01-2023"
+    assert captured["params"]["to"] == "12-2023"
+    assert captured["params"]["type"] == "counts"
+    assert captured["params"]["API_KEY"] == "token"
+    assert "api_key" not in captured["params"]
+
+
 def test_fbi_crime_connector_execute_with_retry_handles_rate_limit(monkeypatch):
     connector = FBICrimeConnector({"api_key": "token", "retry_delay": 0})
     connector.session = DummySession([

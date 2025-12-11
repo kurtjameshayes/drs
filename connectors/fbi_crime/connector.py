@@ -48,6 +48,7 @@ class FBICrimeConnector(BaseConnector):
         self.retry_delay = config.get('retry_delay', 1)
 
         base_url_lower = self.base_url.lower()
+        self._api_key_param_explicit = 'api_key_param' in config
         self.api_key_param = config.get('api_key_param')
         if not self.api_key_param:
             self.api_key_param = 'API_KEY' if 'cde' in base_url_lower else 'api_key'
@@ -58,6 +59,7 @@ class FBICrimeConnector(BaseConnector):
         else:
             self.api_namespace = api_namespace.strip('/')
 
+        self._year_mode_explicit = 'year_mode' in config
         year_mode = config.get('year_mode')
         if year_mode not in {'path', 'query'}:
             self.year_mode = 'query' if 'cde' in base_url_lower else 'path'
@@ -142,15 +144,23 @@ class FBICrimeConnector(BaseConnector):
         
         try:
             endpoint = parameters.get('endpoint', 'estimates/national')
+            request_year_mode = self._resolve_year_mode(endpoint)
+            api_key_param = self._resolve_api_key_param(endpoint)
             from_year = parameters.get('from')
             to_year = parameters.get('to')
 
-            if self.year_mode == 'path':
+            if request_year_mode == 'path':
                 from_year = from_year or '2020'
                 to_year = to_year or '2020'
 
-            params = self._prepare_query_params(parameters)
-            url = self._build_request_url(endpoint, from_year, to_year, params)
+            params = self._prepare_query_params(parameters, api_key_param=api_key_param)
+            url = self._build_request_url(
+                endpoint,
+                from_year,
+                to_year,
+                params,
+                year_mode=request_year_mode,
+            )
 
             response = self._execute_with_retry(url, params)
             
@@ -223,22 +233,27 @@ class FBICrimeConnector(BaseConnector):
         
         raise last_exception
 
-    def _prepare_query_params(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+    def _prepare_query_params(
+        self,
+        parameters: Dict[str, Any],
+        api_key_param: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Build the request parameters, excluding keys that are embedded in the path.
         """
-        params = self._build_auth_params()
+        params = self._build_auth_params(api_key_param=api_key_param)
         excluded_keys = {'endpoint', 'from', 'to', 'api_key', 'API_KEY', self.api_key_param}
         for key, value in parameters.items():
             if key not in excluded_keys and value is not None:
                 params[key] = value
         return params
 
-    def _build_auth_params(self) -> Dict[str, Any]:
+    def _build_auth_params(self, api_key_param: Optional[str] = None) -> Dict[str, Any]:
         """Return the authentication/query params required for API access."""
         params: Dict[str, Any] = {}
-        if self.api_key and self.api_key_param:
-            params[self.api_key_param] = self.api_key
+        key_name = api_key_param or self.api_key_param
+        if self.api_key and key_name:
+            params[key_name] = self.api_key
         return params
 
     def _build_request_url(
@@ -247,6 +262,7 @@ class FBICrimeConnector(BaseConnector):
         from_value: Optional[str],
         to_value: Optional[str],
         params: Dict[str, Any],
+        year_mode: Optional[str] = None,
     ) -> str:
         """
         Construct the request URL, adapting to the legacy SAPI (`/api/.../year/year`)
@@ -274,7 +290,8 @@ class FBICrimeConnector(BaseConnector):
             if route:
                 parts.append(route)
 
-            if self.year_mode == 'path':
+            active_year_mode = year_mode or self.year_mode
+            if active_year_mode == 'path':
                 if from_value:
                     parts.append(str(from_value))
                 if to_value:
@@ -288,13 +305,47 @@ class FBICrimeConnector(BaseConnector):
 
             url = "/".join(normalized_parts)
 
-        if self.year_mode == 'query':
+        active_year_mode = year_mode or self.year_mode
+        if active_year_mode == 'query':
             if from_value and 'from' not in params:
                 params['from'] = from_value
             if to_value and 'to' not in params:
                 params['to'] = to_value
 
         return url
+
+    def _resolve_api_key_param(self, endpoint: Optional[str]) -> str:
+        """
+        Determine which API key parameter name to use for a request.
+        """
+        if self._api_key_param_explicit:
+            return self.api_key_param
+
+        if self._is_cde_endpoint(endpoint):
+            return 'API_KEY'
+
+        return self.api_key_param
+
+    def _resolve_year_mode(self, endpoint: Optional[str]) -> str:
+        """
+        Determine whether to encode years in the path or as query parameters.
+        """
+        if self._year_mode_explicit:
+            return self.year_mode
+
+        if self._is_cde_endpoint(endpoint):
+            return 'query'
+
+        return self.year_mode
+
+    @staticmethod
+    def _is_cde_endpoint(endpoint: Optional[str]) -> bool:
+        if not endpoint:
+            return False
+        endpoint_lower = endpoint.strip().lower()
+        if endpoint_lower.startswith('http://') or endpoint_lower.startswith('https://'):
+            return '/crime/fbi/cde/' in endpoint_lower
+        return False
     
     def validate(self) -> bool:
         """
