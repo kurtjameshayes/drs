@@ -49,6 +49,7 @@ def test_fbi_crime_connector_query_builds_url_and_params(monkeypatch):
 
     assert captured["url"] == "https://api.usa.gov/crime/fbi/sapi/api/estimates/states/CA/2019/2020"
     assert captured["params"]["per_page"] == 5
+    assert captured["params"]["api_key"] == "token"
     assert result["data"]["data"][0]["year"] == "2020"
 
 
@@ -79,6 +80,8 @@ def test_fbi_crime_connector_query_handles_cde_base_url(monkeypatch):
     assert captured["params"]["from"] == "01-2023"
     assert captured["params"]["to"] == "12-2023"
     assert captured["params"]["type"] == "counts"
+    assert captured["params"]["API_KEY"] == "token"
+    assert "api_key" not in captured["params"]
 
 
 def test_fbi_crime_connector_execute_with_retry_handles_rate_limit(monkeypatch):
