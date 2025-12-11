@@ -63,6 +63,9 @@ class FBICrimeConnector(BaseConnector):
             test_url = f"{self.base_url}/api/estimates/national/2020/2020"
             params = {'api_key': self.api_key}
             
+            full_url = self._compose_request_url(test_url, params)
+            logger.info("Validating FBI Crime API connection url=%s", full_url)
+
             response = self.session.get(test_url, params=params, timeout=10)
             response.raise_for_status()
             
@@ -174,6 +177,13 @@ class FBICrimeConnector(BaseConnector):
         
         for attempt in range(self.max_retries):
             try:
+                full_url = self._compose_request_url(url, params)
+                logger.info(
+                    "Executing FBI Crime API query attempt=%s url=%s",
+                    attempt + 1,
+                    full_url,
+                )
+
                 response = self.session.get(url, params=params, timeout=30)
                 
                 # Check for rate limiting

@@ -52,6 +52,9 @@ class CensusConnector(BaseConnector):
             if self.api_key:
                 params["key"] = self.api_key
             
+            full_url = self._compose_request_url(test_url, params)
+            logger.info("Validating Census API access url=%s", full_url)
+
             response = requests.get(test_url, params=params, timeout=10)
             return response.status_code == 200
         except Exception as e:
@@ -93,6 +96,13 @@ class CensusConnector(BaseConnector):
         # Execute query with retry logic
         for attempt in range(self.max_retries):
             try:
+                full_url = self._compose_request_url(query_url, query_params)
+                logger.info(
+                    "Executing Census API query attempt=%s url=%s",
+                    attempt + 1,
+                    full_url,
+                )
+
                 response = requests.get(
                     query_url,
                     params=query_params,
@@ -322,7 +332,10 @@ class CensusConnector(BaseConnector):
             List of dataset information
         """
         try:
-            response = requests.get(f"{self.base_url}.json", timeout=10)
+            url = f"{self.base_url}.json"
+            full_url = self._compose_request_url(url)
+            logger.info("Fetching Census dataset catalog url=%s", full_url)
+            response = requests.get(url, timeout=10)
             if response.status_code == 200:
                 return response.json().get("dataset", [])
         except Exception as e:
@@ -342,6 +355,8 @@ class CensusConnector(BaseConnector):
         """
         try:
             variables_url = f"{self.base_url}/{dataset}/variables.json"
+            full_url = self._compose_request_url(variables_url)
+            logger.info("Fetching Census dataset variables url=%s", full_url)
             response = requests.get(variables_url, timeout=10)
             if response.status_code == 200:
                 return response.json()
