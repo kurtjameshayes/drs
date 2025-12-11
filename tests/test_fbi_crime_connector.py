@@ -47,9 +47,38 @@ def test_fbi_crime_connector_query_builds_url_and_params(monkeypatch):
         "per_page": 5,
     })
 
-    assert captured["url"].endswith("/api/estimates/states/CA/2019/2020")
+    assert captured["url"] == "https://api.usa.gov/crime/fbi/sapi/api/estimates/states/CA/2019/2020"
     assert captured["params"]["per_page"] == 5
     assert result["data"]["data"][0]["year"] == "2020"
+
+
+def test_fbi_crime_connector_query_handles_cde_base_url(monkeypatch):
+    connector = FBICrimeConnector({
+        "api_key": "token",
+        "url": "https://api.usa.gov/crime/fbi/cde",
+    })
+    connector.connected = True
+
+    captured = {}
+
+    def fake_execute(url, params):
+        captured["url"] = url
+        captured["params"] = params
+        return DummyResponse(200, json_data={"results": []})
+
+    monkeypatch.setattr(connector, "_execute_with_retry", fake_execute)
+
+    connector.query({
+        "endpoint": "arrest/national/all",
+        "from": "01-2023",
+        "to": "12-2023",
+        "type": "counts",
+    })
+
+    assert captured["url"] == "https://api.usa.gov/crime/fbi/cde/arrest/national/all"
+    assert captured["params"]["from"] == "01-2023"
+    assert captured["params"]["to"] == "12-2023"
+    assert captured["params"]["type"] == "counts"
 
 
 def test_fbi_crime_connector_execute_with_retry_handles_rate_limit(monkeypatch):
