@@ -48,6 +48,10 @@ class FBICrimeConnector(BaseConnector):
         self.retry_delay = config.get('retry_delay', 1)
 
         base_url_lower = self.base_url.lower()
+        self.api_key_param = config.get('api_key_param')
+        if not self.api_key_param:
+            self.api_key_param = 'API_KEY' if 'cde' in base_url_lower else 'api_key'
+
         api_namespace = config.get('api_namespace')
         if api_namespace is None:
             self.api_namespace = '' if 'cde' in base_url_lower else 'api'
@@ -74,7 +78,7 @@ class FBICrimeConnector(BaseConnector):
             })
             
             # Test connection with a simple request
-            params = {'api_key': self.api_key}
+            params = self._build_auth_params()
             test_url = self._build_request_url(
                 endpoint='estimates/national',
                 from_value='2020',
@@ -223,10 +227,18 @@ class FBICrimeConnector(BaseConnector):
         """
         Build the request parameters, excluding keys that are embedded in the path.
         """
-        params = {'api_key': self.api_key}
+        params = self._build_auth_params()
+        excluded_keys = {'endpoint', 'from', 'to', 'api_key', 'API_KEY', self.api_key_param}
         for key, value in parameters.items():
-            if key not in {'endpoint', 'from', 'to', 'api_key'} and value is not None:
+            if key not in excluded_keys and value is not None:
                 params[key] = value
+        return params
+
+    def _build_auth_params(self) -> Dict[str, Any]:
+        """Return the authentication/query params required for API access."""
+        params: Dict[str, Any] = {}
+        if self.api_key and self.api_key_param:
+            params[self.api_key_param] = self.api_key
         return params
 
     def _build_request_url(
