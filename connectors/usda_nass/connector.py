@@ -139,7 +139,17 @@ class USDANASSConnector(BaseConnector):
         Returns:
             Dict containing standardized data with metadata
         """
-        if isinstance(data, dict) and "data" in data:
+        # Extract data using JSONPath if data_path is configured
+        extracted_data = self._extract_data_by_path(data)
+        
+        # If extraction returned something different, use it directly as records
+        if extracted_data is not data:
+            if isinstance(extracted_data, list):
+                records = extracted_data
+            else:
+                records = [extracted_data] if extracted_data else []
+        # Fall back to default extraction logic
+        elif isinstance(data, dict) and "data" in data:
             records = data["data"]
         elif isinstance(data, list):
             records = data

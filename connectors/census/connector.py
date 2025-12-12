@@ -146,6 +146,9 @@ class CensusConnector(BaseConnector):
         Returns:
             Dict containing standardized data with metadata
         """
+        # Extract data using JSONPath if data_path is configured
+        data = self._extract_data_by_path(data)
+        
         if not data or len(data) < 2:
             return {
                 "metadata": self._create_metadata(0, {}),
