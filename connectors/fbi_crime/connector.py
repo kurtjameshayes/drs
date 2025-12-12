@@ -68,38 +68,23 @@ class FBICrimeConnector(BaseConnector):
         
     def connect(self) -> bool:
         """
-        Establish connection to FBI Crime Data API.
+        Establish connection resources without performing validation requests.
         
         Returns:
-            bool: True if connection successful
+            bool: True if session initialization succeeded
         """
         try:
-            self.session = requests.Session()
-            self.session.headers.update({
-                'Accept': 'application/json'
-            })
-            
-            # Test connection with a simple request
-            params = self._build_auth_params()
-            test_url = self._build_request_url(
-                endpoint='estimates/national',
-                from_value='2020',
-                to_value='2020',
-                params=params
-            )
-            
-            full_url = self._compose_request_url(test_url, params)
-            logger.info("Validating FBI Crime API connection url=%s", full_url)
-
-            response = self.session.get(test_url, params=params, timeout=10)
-            response.raise_for_status()
-            
+            if not self.session:
+                self.session = requests.Session()
+                self.session.headers.update({'Accept': 'application/json'})
             self.connected = True
-            logger.info("Successfully connected to FBI Crime Data API")
             return True
-            
         except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to connect to FBI Crime Data API: {str(e)}")
+            logger.error(f"Failed to initialize FBI Crime Data session: {str(e)}")
+            self.connected = False
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error initializing FBI Crime Data session: {str(e)}")
             self.connected = False
             return False
     

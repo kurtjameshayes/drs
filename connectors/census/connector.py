@@ -26,13 +26,13 @@ class CensusConnector(BaseConnector):
         self._attr_lookup_unavailable = False
     
     def connect(self) -> bool:
-        """Establish connection by validating API access."""
-        try:
-            self.connected = self.validate()
-            return self.connected
-        except Exception as e:
-            logger.error(f"Connection failed: {str(e)}")
-            return False
+        """
+        Establish a connection flag without performing validation.
+        
+        Validation can be explicitly triggered via the validate() method when needed.
+        """
+        self.connected = True
+        return True
     
     def disconnect(self) -> bool:
         """Close connection (no persistent connection for REST API)."""
