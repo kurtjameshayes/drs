@@ -9,7 +9,9 @@ API Documentation: https://crime-data-explorer.fr.cloud.gov/pages/docApi
 
 import requests
 import time
+import re
 from typing import Dict, List, Any, Optional
+from urllib.parse import urlencode
 from core.base_connector import BaseConnector
 import logging
 
@@ -26,7 +28,13 @@ class FBICrimeConnector(BaseConnector):
     - Agency data
     - Offense data
     - Arrest data
+    
+    Supports dynamic query parameters with placeholders like {param_name}
+    that can be substituted at runtime.
     """
+    
+    # Pattern to match dynamic placeholders like {from mm-yyyy} or {to}
+    DYNAMIC_PLACEHOLDER_PATTERN = re.compile(r'^\{[^}]+\}$')
     
     def __init__(self, config: Dict[str, Any]):
         """
@@ -108,46 +116,43 @@ class FBICrimeConnector(BaseConnector):
             logger.error(f"Error disconnecting from FBI Crime Data API: {str(e)}")
             return False
     
-    def query(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+    def query(self, parameters: Dict[str, Any], 
+              dynamic_params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Execute a query against FBI Crime Data API.
         
         Args:
             parameters: Query parameters including:
-                - endpoint: API endpoint (e.g., 'estimates/national', 'estimates/states/CA')
-                - from: Start year (optional)
-                - to: End year (optional)
-                - variables: Specific variables to retrieve (optional)
-                - Additional endpoint-specific parameters
+                - endpoint: API endpoint (e.g., 'estimates/national', 'arrest/national/all')
+                - Additional endpoint-specific parameters (can include placeholders like {from mm-yyyy})
+            dynamic_params: Optional dictionary of values to substitute for dynamic placeholders
+                Example: {"from": "01-2023", "to": "12-2023"}
         
         Returns:
             dict: Query results with metadata
+            
+        Example:
+            # With stored query parameters containing placeholders:
+            parameters = {
+                "endpoint": "arrest/national/all",
+                "type": "counts",
+                "from": "{from mm-yyyy}",
+                "to": "{to mm-yyyy}"
+            }
+            # Provide actual values at runtime:
+            dynamic_params = {"from": "01-2023", "to": "12-2023"}
+            
+            result = connector.query(parameters, dynamic_params)
         """
         if not self.connected:
             if not self.connect():
                 raise ConnectionError("Failed to connect to FBI Crime Data API")
         
         try:
-            endpoint = parameters.get('endpoint', 'estimates/national')
-            request_year_mode = self._resolve_year_mode(endpoint)
-            api_key_param = self._resolve_api_key_param(endpoint)
-            from_year = parameters.get('from')
-            to_year = parameters.get('to')
-
-            if request_year_mode == 'path':
-                from_year = from_year or '2020'
-                to_year = to_year or '2020'
-
-            params = self._prepare_query_params(parameters, api_key_param=api_key_param)
-            url = self._build_request_url(
-                endpoint,
-                from_year,
-                to_year,
-                params,
-                year_mode=request_year_mode,
-            )
-
-            response = self._execute_with_retry(url, params)
+            # Build the complete request URL with all parameters
+            url, query_params = self._build_request_url(parameters, dynamic_params)
+            
+            response = self._execute_with_retry(url, query_params)
             
             # Parse response
             data = response.json()
@@ -159,8 +164,10 @@ class FBICrimeConnector(BaseConnector):
                 'success': True,
                 'data': transformed_data,
                 'metadata': {
-                    'endpoint': endpoint,
+                    'endpoint': parameters.get('endpoint', ''),
                     'parameters': parameters,
+                    'dynamic_params': dynamic_params,
+                    'final_url': url,
                     'status_code': response.status_code
                 }
             }
@@ -218,50 +225,100 @@ class FBICrimeConnector(BaseConnector):
         
         raise last_exception
 
-    def _prepare_query_params(
-        self,
-        parameters: Dict[str, Any],
-        api_key_param: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    def _is_dynamic_placeholder(self, value: Any) -> bool:
         """
-        Build the request parameters, excluding keys that are embedded in the path.
+        Check if a value is a dynamic placeholder (e.g., {from mm-yyyy}).
+        
+        Args:
+            value: The value to check
+            
+        Returns:
+            bool: True if the value is a dynamic placeholder
         """
-        params = self._build_auth_params(api_key_param=api_key_param)
-        excluded_keys = {'endpoint', 'from', 'to', 'api_key', 'API_KEY', self.api_key_param}
-        for key, value in parameters.items():
-            if key not in excluded_keys and value is not None:
-                params[key] = value
-        return params
-
-    def _build_auth_params(self, api_key_param: Optional[str] = None) -> Dict[str, Any]:
-        """Return the authentication/query params required for API access."""
-        params: Dict[str, Any] = {}
-        key_name = api_key_param or self.api_key_param
-        if self.api_key and key_name:
-            params[key_name] = self.api_key
-        return params
+        if not isinstance(value, str):
+            return False
+        return bool(self.DYNAMIC_PLACEHOLDER_PATTERN.match(value.strip()))
+    
+    def _extract_param_name_from_placeholder(self, placeholder: str) -> str:
+        """
+        Extract the parameter name from a placeholder string.
+        
+        For example:
+            "{from mm-yyyy}" -> "from"
+            "{to}" -> "to"
+            "{state_code}" -> "state_code"
+        
+        Args:
+            placeholder: The placeholder string (e.g., "{from mm-yyyy}")
+            
+        Returns:
+            str: The extracted parameter name
+        """
+        # Remove the braces
+        inner = placeholder.strip()[1:-1]
+        # Get the first word (parameter name)
+        param_name = inner.split()[0]
+        return param_name
 
     def _build_request_url(
         self,
-        endpoint: str,
-        from_value: Optional[str],
-        to_value: Optional[str],
-        params: Dict[str, Any],
-        year_mode: Optional[str] = None,
-    ) -> str:
+        query: Dict[str, Any],
+        dynamic_params: Optional[Dict[str, Any]] = None,
+    ) -> tuple:
         """
-        Construct the request URL, adapting to the legacy SAPI (`/api/.../year/year`)
-        and the newer CDE endpoints that expect query parameters.
+        Construct the complete request URL with all parameters.
+        
+        This method processes the query parameters in the following order:
+        1. Start with the base URL from connector config
+        2. Append the endpoint from query parameters
+        3. Append all hard-coded parameter values
+        4. Substitute dynamic placeholders with provided values
+        5. Add API key
+        
+        Args:
+            query: The full query object containing:
+                - endpoint: API endpoint path
+                - other parameters (can be hard-coded or dynamic placeholders)
+            dynamic_params: Optional dict of values to substitute for dynamic placeholders
+            
+        Returns:
+            tuple: (url, query_params) - The final URL and query parameters dict
+            
+        Example:
+            query = {
+                "endpoint": "arrest/national/all",
+                "type": "counts",
+                "from": "{from mm-yyyy}",
+                "to": "{to mm-yyyy}"
+            }
+            dynamic_params = {"from": "01-2023", "to": "12-2023"}
+            
+            # Returns:
+            # url = "https://api.usa.gov/crime/fbi/cde/arrest/national/all"
+            # query_params = {"type": "counts", "from": "01-2023", "to": "12-2023", "API_KEY": "..."}
         """
-        endpoint = (endpoint or '').strip()
-
+        dynamic_params = dynamic_params or {}
+        
+        # Step 1: Start with base URL
+        print(f"\n[FBI Query Builder] Step 1 - Base URL: {self.base_url}")
+        
+        # Step 2: Get and process endpoint
+        endpoint = (query.get('endpoint', '') or '').strip()
+        print(f"[FBI Query Builder] Step 2 - Endpoint from query: {endpoint}")
+        
+        # Determine if this is a CDE-style endpoint
+        is_cde = self._is_cde_endpoint(endpoint) or 'cde' in self.base_url.lower()
+        
+        # Build the URL path
         if endpoint.startswith('http://') or endpoint.startswith('https://'):
+            # Full URL provided as endpoint
             url = endpoint
+            print(f"[FBI Query Builder] Full URL provided as endpoint: {url}")
         else:
             clean_endpoint = endpoint.lstrip('/')
             namespace = self.api_namespace.strip('/') if self.api_namespace else ''
-
-            if namespace:
+            
+            if namespace and not is_cde:
                 if clean_endpoint.startswith(f"{namespace}/"):
                     route = clean_endpoint
                 elif clean_endpoint == namespace:
@@ -270,61 +327,97 @@ class FBICrimeConnector(BaseConnector):
                     route = "/".join(part for part in [namespace, clean_endpoint] if part)
             else:
                 route = clean_endpoint
-
+            
             parts: List[str] = [self.base_url]
             if route:
                 parts.append(route)
-
-            active_year_mode = year_mode or self.year_mode
-            if active_year_mode == 'path':
-                if from_value:
-                    parts.append(str(from_value))
-                if to_value:
-                    parts.append(str(to_value))
-
+            
+            # Normalize parts
             normalized_parts: List[str] = []
             for idx, part in enumerate(parts):
                 if not part:
                     continue
                 normalized_parts.append(part.rstrip('/') if idx == 0 else part.strip('/'))
-
+            
             url = "/".join(normalized_parts)
-
-        active_year_mode = year_mode or self.year_mode
-        if active_year_mode == 'query':
-            if from_value and 'from' not in params:
-                params['from'] = from_value
-            if to_value and 'to' not in params:
-                params['to'] = to_value
-
-        return url
+        
+        print(f"[FBI Query Builder] Step 3 - URL without parameters: {url}")
+        
+        # Step 3 & 4: Process query parameters
+        query_params: Dict[str, Any] = {}
+        hard_coded_params: Dict[str, Any] = {}
+        dynamic_placeholders: Dict[str, str] = {}  # Maps param name -> placeholder
+        
+        # Keys that should not be added as query parameters
+        excluded_keys = {'endpoint', 'api_key', 'API_KEY', self.api_key_param}
+        
+        # Categorize parameters as hard-coded or dynamic
+        for key, value in query.items():
+            if key in excluded_keys:
+                continue
+            if value is None:
+                continue
+                
+            if self._is_dynamic_placeholder(value):
+                # This is a dynamic placeholder
+                param_name = self._extract_param_name_from_placeholder(value)
+                dynamic_placeholders[key] = value
+                print(f"[FBI Query Builder] Found dynamic placeholder: {key}={value} (param name: {param_name})")
+            else:
+                # This is a hard-coded value
+                hard_coded_params[key] = value
+                print(f"[FBI Query Builder] Found hard-coded parameter: {key}={value}")
+        
+        # Step 4a: Add hard-coded parameters
+        print(f"[FBI Query Builder] Step 4a - Adding hard-coded parameters: {hard_coded_params}")
+        query_params.update(hard_coded_params)
+        
+        # Step 4b: Substitute dynamic placeholders
+        print(f"[FBI Query Builder] Step 4b - Processing dynamic placeholders with values: {dynamic_params}")
+        for key, placeholder in dynamic_placeholders.items():
+            param_name = self._extract_param_name_from_placeholder(placeholder)
+            
+            # Look for the value in dynamic_params using the key name first, then param_name
+            if key in dynamic_params:
+                query_params[key] = dynamic_params[key]
+                print(f"[FBI Query Builder] Substituted {key}: {placeholder} -> {dynamic_params[key]}")
+            elif param_name in dynamic_params:
+                query_params[key] = dynamic_params[param_name]
+                print(f"[FBI Query Builder] Substituted {key}: {placeholder} -> {dynamic_params[param_name]}")
+            else:
+                print(f"[FBI Query Builder] WARNING: No value provided for dynamic parameter '{key}' (placeholder: {placeholder})")
+        
+        # Step 5: Add API key
+        api_key_param = self._resolve_api_key_param(endpoint)
+        if self.api_key:
+            query_params[api_key_param] = self.api_key
+            print(f"[FBI Query Builder] Step 5 - Added API key parameter: {api_key_param}=***")
+        
+        # Build final URL for logging
+        final_url = self._compose_request_url(url, query_params)
+        print(f"[FBI Query Builder] Final URL (for logging): {final_url}")
+        print(f"[FBI Query Builder] Query parameters: { {k: '***' if 'key' in k.lower() else v for k, v in query_params.items()} }")
+        
+        return url, query_params
 
     def _resolve_api_key_param(self, endpoint: Optional[str]) -> str:
         """
         Determine which API key parameter name to use for a request.
+        
+        For CDE endpoints, uses 'API_KEY' (uppercase).
+        For SAPI endpoints, uses 'api_key' (lowercase).
         """
         if self._api_key_param_explicit:
             return self.api_key_param
 
-        if self._is_cde_endpoint(endpoint):
+        if self._is_cde_endpoint(endpoint) or 'cde' in self.base_url.lower():
             return 'API_KEY'
 
         return self.api_key_param
 
-    def _resolve_year_mode(self, endpoint: Optional[str]) -> str:
-        """
-        Determine whether to encode years in the path or as query parameters.
-        """
-        if self._year_mode_explicit:
-            return self.year_mode
-
-        if self._is_cde_endpoint(endpoint):
-            return 'query'
-
-        return self.year_mode
-
     @staticmethod
     def _is_cde_endpoint(endpoint: Optional[str]) -> bool:
+        """Check if the endpoint is for the CDE (Crime Data Explorer) API."""
         if not endpoint:
             return False
         endpoint_lower = endpoint.strip().lower()
