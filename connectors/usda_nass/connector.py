@@ -26,13 +26,13 @@ class USDANASSConnector(BaseConnector):
             raise ValueError("API key is required for USDA NASS connector")
     
     def connect(self) -> bool:
-        """Establish connection by validating API key."""
-        try:
-            self.connected = self.validate()
-            return self.connected
-        except Exception as e:
-            logger.error(f"Connection failed: {str(e)}")
-            return False
+        """
+        Establish logical connection without issuing a validation request.
+        
+        API validation can be run explicitly via validate().
+        """
+        self.connected = True
+        return True
     
     def disconnect(self) -> bool:
         """Close connection (no persistent connection for REST API)."""
