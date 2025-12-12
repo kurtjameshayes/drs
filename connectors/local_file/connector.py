@@ -190,7 +190,18 @@ class LocalFileConnector(BaseConnector):
         Returns:
             Dict containing standardized data with metadata
         """
-        records = data.get("data", [])
+        # Extract data using JSONPath if data_path is configured
+        extracted_data = self._extract_data_by_path(data)
+        
+        # If extraction returned something different, use it directly as records
+        if extracted_data is not data:
+            if isinstance(extracted_data, list):
+                records = extracted_data
+            else:
+                records = [extracted_data] if extracted_data else []
+        # Fall back to default extraction logic
+        else:
+            records = data.get("data", []) if isinstance(data, dict) else []
         
         standardized = {
             "metadata": self._create_metadata(len(records), {}),

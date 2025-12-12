@@ -474,10 +474,19 @@ class FBICrimeConnector(BaseConnector):
             dict: Transformed data in standard format
         """
         try:
+            # Extract data using JSONPath if data_path is configured
+            extracted_data = self._extract_data_by_path(data)
+            
+            # If extraction returned something different, use it directly as records
+            if extracted_data is not data:
+                if isinstance(extracted_data, list):
+                    records = extracted_data
+                else:
+                    records = [extracted_data] if extracted_data else []
+            # Fall back to default extraction logic
             # FBI Crime Data API returns data in various formats
             # Most endpoints return a 'results' array
-            
-            if isinstance(data, dict):
+            elif isinstance(data, dict):
                 # Check for common response structures
                 if 'results' in data:
                     records = data['results']
