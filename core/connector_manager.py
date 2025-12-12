@@ -100,13 +100,15 @@ class ConnectorManager:
         
         return self.connectors.get(source_id)
     
-    def query(self, source_id: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
+    def query(self, source_id: str, parameters: Dict[str, Any],
+              dynamic_params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Execute query through appropriate connector.
         
         Args:
             source_id: Data source identifier
             parameters: Query parameters
+            dynamic_params: Optional dynamic parameter values for placeholder substitution
             
         Returns:
             Dict containing query results
@@ -116,7 +118,7 @@ class ConnectorManager:
             raise ValueError(f"Connector not found or unavailable: {source_id}")
         
         try:
-            result = connector.query(parameters)
+            result = connector.query(parameters, dynamic_params=dynamic_params)
             try:
                 result = connector.process_result(result, parameters)
             except Exception as process_error:
