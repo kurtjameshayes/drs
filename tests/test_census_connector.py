@@ -95,25 +95,9 @@ class TestCensusConnectorInheritance:
         )
         assert isinstance(connector, BaseConnector)
 
-    def test_census_connector_has_extract_data_by_path_method(self):
-        """Verify CensusConnector has the _extract_data_by_path method from BaseConnector."""
-        connector = CensusConnector(
-            {"source_id": "test_census", "source_name": "Test Census"},
-        )
-        assert hasattr(connector, "_extract_data_by_path")
-        assert callable(getattr(connector, "_extract_data_by_path"))
-
-    def test_census_connector_extract_data_by_path_is_from_base(self):
-        """Verify _extract_data_by_path is the method from BaseConnector."""
-        connector = CensusConnector(
-            {"source_id": "test_census", "source_name": "Test Census"},
-        )
-        # The method should be the same as defined in BaseConnector
-        assert connector._extract_data_by_path.__func__ is BaseConnector._extract_data_by_path
-
 
 class TestCensusConnectorTransform:
-    """Tests for CensusConnector.transform method which uses _extract_data_by_path."""
+    """Tests for CensusConnector.transform method."""
 
     def test_transform_returns_empty_for_insufficient_data(self):
         """Verify transform handles empty or minimal data correctly."""
@@ -153,95 +137,6 @@ class TestCensusConnectorTransform:
         assert result["data"][1]["NAME"] == "Alaska"
         assert result["schema"]["fields"][0]["name"] == "NAME"
         assert result["schema"]["fields"][0]["type"] == "string"
-
-    def test_transform_calls_extract_data_by_path(self):
-        """Verify transform properly calls _extract_data_by_path."""
-        connector = CensusConnector(
-            {"source_id": "test_census", "source_name": "Test Census"},
-        )
-
-        # Track if _extract_data_by_path was called
-        original_method = connector._extract_data_by_path
-        call_tracker = {"called": False, "arg": None}
-
-        def tracking_method(data):
-            call_tracker["called"] = True
-            call_tracker["arg"] = data
-            return original_method(data)
-
-        connector._extract_data_by_path = tracking_method
-
-        raw_data = [["NAME"], ["Test"]]
-        connector.transform(raw_data)
-
-        assert call_tracker["called"] is True
-        assert call_tracker["arg"] is raw_data
-
-    def test_transform_with_data_path_extracts_nested_data(self):
-        """Verify transform uses data_path to extract nested Census data."""
-        connector = CensusConnector(
-            {
-                "source_id": "test_census",
-                "source_name": "Test Census",
-                "data_path": "$.response.data",
-            },
-        )
-
-        raw_data = {
-            "response": {
-                "data": [
-                    ["NAME", "POP"],
-                    ["California", "39538223"],
-                ],
-                "status": "ok",
-            },
-            "metadata": {"version": "1.0"},
-        }
-
-        result = connector.transform(raw_data)
-
-        assert len(result["data"]) == 1
-        assert result["data"][0]["NAME"] == "California"
-        assert result["data"][0]["POP"] == "39538223"
-
-    def test_transform_without_data_path_uses_raw_data(self):
-        """Verify transform uses raw data when no data_path is configured."""
-        connector = CensusConnector(
-            {"source_id": "test_census", "source_name": "Test Census"},
-        )
-
-        raw_data = [
-            ["NAME", "B01001_001E"],
-            ["Texas", "29145505"],
-        ]
-
-        result = connector.transform(raw_data)
-
-        assert len(result["data"]) == 1
-        assert result["data"][0]["NAME"] == "Texas"
-        assert result["data"][0]["B01001_001E"] == "29145505"
-
-    def test_transform_with_invalid_data_path_returns_fallback(self):
-        """Verify transform handles invalid data_path gracefully."""
-        connector = CensusConnector(
-            {
-                "source_id": "test_census",
-                "source_name": "Test Census",
-                "data_path": "$.nonexistent.path",
-            },
-        )
-
-        # When data_path doesn't match, _extract_data_by_path returns original
-        raw_data = [
-            ["NAME", "POP"],
-            ["Florida", "21538187"],
-        ]
-
-        result = connector.transform(raw_data)
-
-        # Should still work with original data
-        assert len(result["data"]) == 1
-        assert result["data"][0]["NAME"] == "Florida"
 
     def test_transform_handles_mismatched_row_lengths(self):
         """Verify transform handles rows with fewer columns than headers."""

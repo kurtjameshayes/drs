@@ -4,9 +4,6 @@ from urllib.parse import urlencode
 from datetime import datetime
 import logging
 
-from jsonpath_ng import parse as jsonpath_parse
-from jsonpath_ng.exceptions import JsonPathParserError
-
 logger = logging.getLogger(__name__)
 
 class BaseConnector(ABC):
@@ -140,63 +137,6 @@ class BaseConnector(ABC):
 
         return f"{url} params={params}"
 
-    def _extract_data_by_path(self, raw_data: Any) -> Any:
-        """
-        Extract data from the raw response using the configured JSONPath data_path.
-
-        If no data_path is configured, returns the raw_data unchanged.
-        The data_path should be a valid JSONPath expression (e.g., '$.data', '$.results').
-
-        Args:
-            raw_data: The raw JSON response from the API
-
-        Returns:
-            The extracted data if data_path is configured and matches,
-            otherwise the original raw_data
-        """
-        data_path = self.config.get("data_path")
-        if not data_path:
-            return raw_data
-
-        try:
-            jsonpath_expr = jsonpath_parse(data_path)
-            matches = jsonpath_expr.find(raw_data)
-
-            if not matches:
-                logger.warning(
-                    "JSONPath '%s' did not match any data in response for source_id=%s. "
-                    "Returning original data.",
-                    data_path,
-                    self.source_id,
-                )
-                return raw_data
-
-            # If there's a single match, return its value directly
-            # If multiple matches, return a list of values
-            if len(matches) == 1:
-                return matches[0].value
-            else:
-                return [match.value for match in matches]
-
-        except JsonPathParserError as e:
-            logger.error(
-                "Invalid JSONPath expression '%s' for source_id=%s: %s. "
-                "Returning original data.",
-                data_path,
-                self.source_id,
-                str(e),
-            )
-            return raw_data
-        except Exception as e:
-            logger.error(
-                "Error extracting data with JSONPath '%s' for source_id=%s: %s. "
-                "Returning original data.",
-                data_path,
-                self.source_id,
-                str(e),
-            )
-            return raw_data
-    
     def process_result(self, result: Dict[str, Any], parameters: Dict[str, Any]) -> Dict[str, Any]:
         """
         Post-process a connector result before returning it to callers.
