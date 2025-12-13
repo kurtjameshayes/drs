@@ -48,12 +48,14 @@ class BaseConnector(ABC):
         pass
     
     @abstractmethod
-    def query(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+    def query(self, parameters: Dict[str, Any],
+              dynamic_params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Execute query with specified parameters.
         
         Args:
             parameters: Query parameters specific to the data source
+            dynamic_params: Optional dynamic parameter values for placeholder substitution
             
         Returns:
             Dict containing query results and metadata

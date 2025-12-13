@@ -1,5 +1,5 @@
 import requests
-from typing import Dict, Any, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 from core.base_connector import BaseConnector
 import logging
 import time
@@ -61,7 +61,8 @@ class CensusConnector(BaseConnector):
             logger.error(f"Validation failed: {str(e)}")
             return False
     
-    def query(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+    def query(self, parameters: Dict[str, Any],
+              dynamic_params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Execute query against Census.gov API.
         
@@ -72,6 +73,7 @@ class CensusConnector(BaseConnector):
                 - for: Geography selection
                 - in: Optional parent geography
                 - additional filters
+            dynamic_params: Optional dynamic parameter values for placeholder substitution
                 
         Returns:
             Dict containing query results and metadata

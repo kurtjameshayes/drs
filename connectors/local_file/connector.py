@@ -1,7 +1,7 @@
 import pandas as pd
 import json
 import os
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from core.base_connector import BaseConnector
 import logging
 
@@ -92,7 +92,8 @@ class LocalFileConnector(BaseConnector):
         else:
             raise ValueError(f"Unsupported file extension: {ext}")
     
-    def query(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+    def query(self, parameters: Dict[str, Any],
+              dynamic_params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Execute query on local file.
         
@@ -102,6 +103,7 @@ class LocalFileConnector(BaseConnector):
                 - filters: Dict of column filters (optional)
                 - limit: Maximum number of rows (optional)
                 - offset: Number of rows to skip (optional)
+            dynamic_params: Optional dynamic parameter values (unused for local files)
                 
         Returns:
             Dict containing query results and metadata

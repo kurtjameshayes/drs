@@ -1,5 +1,5 @@
 import requests
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from core.base_connector import BaseConnector
 import logging
 import time
@@ -61,7 +61,8 @@ class USDANASSConnector(BaseConnector):
             logger.error(f"Validation failed: {str(e)}")
             return False
     
-    def query(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+    def query(self, parameters: Dict[str, Any],
+              dynamic_params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Execute query against USDA NASS QuickStats API.
         
@@ -73,6 +74,7 @@ class USDANASSConnector(BaseConnector):
                 - county_name: County name
                 - statisticcat_desc: Statistic category
                 - short_desc: Short description filter
+            dynamic_params: Optional dynamic parameter values for placeholder substitution
                 
         Returns:
             Dict containing query results and metadata

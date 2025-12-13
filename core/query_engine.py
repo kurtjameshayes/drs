@@ -36,7 +36,8 @@ class QueryEngine:
         self.use_cache = True
     
     def execute_query(self, source_id: str, parameters: Dict[str, Any], 
-                     use_cache: bool = None, query_id: str = None) -> Dict[str, Any]:
+                     use_cache: bool = None, query_id: str = None,
+                     dynamic_params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Execute a query against a data source.
         
@@ -45,6 +46,7 @@ class QueryEngine:
             parameters: Query parameters
             use_cache: Override default cache behavior
             query_id: Optional reference to stored query
+            dynamic_params: Optional dynamic parameter values for placeholder substitution
             
         Returns:
             Dict containing query results
@@ -68,7 +70,7 @@ class QueryEngine:
         
         # Execute query through connector
         try:
-            result = self.connector_manager.query(source_id, parameters)
+            result = self.connector_manager.query(source_id, parameters, dynamic_params=dynamic_params)
             
             if result.get("success"):
                 # Cache the result with query_id if provided
@@ -107,6 +109,7 @@ class QueryEngine:
             query_id: Stored query identifier
             use_cache: Override default cache behavior
             parameter_overrides: Optional parameters to override stored query parameters
+                or provide values for dynamic placeholders
             
         Returns:
             Dict containing query results
@@ -134,12 +137,13 @@ class QueryEngine:
             connector_id = stored_query["connector_id"]
             parameters = stored_query["parameters"].copy()
             
-            # Apply parameter overrides if provided
-            if parameter_overrides:
-                parameters.update(parameter_overrides)
-            
             # Execute the query with query_id reference
-            result = self.execute_query(connector_id, parameters, use_cache, query_id=query_id)
+            # Pass parameter_overrides as dynamic_params so the connector can
+            # use them to substitute dynamic placeholders in the stored parameters
+            result = self.execute_query(
+                connector_id, parameters, use_cache, 
+                query_id=query_id, dynamic_params=parameter_overrides
+            )
             
             # Add stored query metadata to result
             if result.get("success"):

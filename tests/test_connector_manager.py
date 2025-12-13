@@ -1,4 +1,4 @@
-from typing import Dict, Any
+from typing import Any, Dict, Optional
 
 from core.base_connector import BaseConnector
 from core.connector_manager import ConnectorManager
@@ -23,7 +23,8 @@ class DummyConnector(BaseConnector):
     def validate(self) -> bool:
         return True
 
-    def query(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+    def query(self, parameters: Dict[str, Any],
+              dynamic_params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         return {
             "data": [{"original": 1}],
             "metadata": {},
