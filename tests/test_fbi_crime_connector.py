@@ -279,10 +279,12 @@ def test_fbi_crime_connector_execute_with_retry_handles_rate_limit(monkeypatch):
 
 
 def test_fbi_crime_connector_data_path_extracts_data(monkeypatch):
-    """Test that data_path parameter extracts data from API response using JSONPath."""
+    """Test that data_path in connector config extracts data from API response using JSONPath."""
+    # data_path is configured in the connector config (from MongoDB)
     connector = FBICrimeConnector({
         "api_key": "token",
         "url": "https://api.usa.gov/crime/fbi/cde",
+        "data_path": "$.data"  # Configured in connector_config
     })
     connector.connected = True
 
@@ -303,11 +305,10 @@ def test_fbi_crime_connector_data_path_extracts_data(monkeypatch):
 
     monkeypatch.setattr(connector, "_execute_with_retry", fake_execute)
 
-    # Query with data_path to extract just the 'data' array
+    # Query - data_path comes from connector config, not query params
     result = connector.query({
         "endpoint": "arrest/national/all",
         "type": "counts",
-        "data_path": "$.data"
     })
 
     assert result["success"] is True
@@ -321,10 +322,11 @@ def test_fbi_crime_connector_data_path_extracts_data(monkeypatch):
 
 
 def test_fbi_crime_connector_data_path_not_added_to_query_params(monkeypatch):
-    """Test that data_path is not added as a URL query parameter."""
+    """Test that data_path from config is not added as a URL query parameter."""
     connector = FBICrimeConnector({
         "api_key": "token",
         "url": "https://api.usa.gov/crime/fbi/cde",
+        "data_path": "$.data"  # Configured in connector_config
     })
     connector.connected = True
 
@@ -342,7 +344,6 @@ def test_fbi_crime_connector_data_path_not_added_to_query_params(monkeypatch):
         "type": "counts",
         "from": "01-2023",
         "to": "12-2023",
-        "data_path": "$.data"
     })
 
     # data_path should NOT be in query params
@@ -354,10 +355,11 @@ def test_fbi_crime_connector_data_path_not_added_to_query_params(monkeypatch):
 
 
 def test_fbi_crime_connector_data_path_with_nested_path(monkeypatch):
-    """Test that data_path works with nested paths like $.response.data."""
+    """Test that data_path works with nested paths like $.response.data.items."""
     connector = FBICrimeConnector({
         "api_key": "token",
         "url": "https://api.usa.gov/crime/fbi/cde",
+        "data_path": "$.response.data.items"  # Configured in connector_config
     })
     connector.connected = True
 
@@ -378,7 +380,6 @@ def test_fbi_crime_connector_data_path_with_nested_path(monkeypatch):
 
     result = connector.query({
         "endpoint": "test/endpoint",
-        "data_path": "$.response.data.items"
     })
 
     assert result["success"] is True
@@ -393,6 +394,7 @@ def test_fbi_crime_connector_data_path_no_match_returns_original(monkeypatch):
     connector = FBICrimeConnector({
         "api_key": "token",
         "url": "https://api.usa.gov/crime/fbi/cde",
+        "data_path": "$.nonexistent.path"  # Configured in connector_config
     })
     connector.connected = True
 
@@ -408,7 +410,6 @@ def test_fbi_crime_connector_data_path_no_match_returns_original(monkeypatch):
 
     result = connector.query({
         "endpoint": "test/endpoint",
-        "data_path": "$.nonexistent.path"
     })
 
     assert result["success"] is True
@@ -420,10 +421,11 @@ def test_fbi_crime_connector_data_path_no_match_returns_original(monkeypatch):
 
 
 def test_fbi_crime_connector_data_path_in_metadata(monkeypatch):
-    """Test that data_path is included in the result metadata."""
+    """Test that data_path from config is included in the result metadata."""
     connector = FBICrimeConnector({
         "api_key": "token",
         "url": "https://api.usa.gov/crime/fbi/cde",
+        "data_path": "$.data"  # Configured in connector_config
     })
     connector.connected = True
 
@@ -434,17 +436,17 @@ def test_fbi_crime_connector_data_path_in_metadata(monkeypatch):
 
     result = connector.query({
         "endpoint": "test/endpoint",
-        "data_path": "$.data"
     })
 
     assert result["metadata"]["data_path"] == "$.data"
 
 
 def test_fbi_crime_connector_no_data_path(monkeypatch):
-    """Test that queries without data_path work as before (backward compatibility)."""
+    """Test that queries without data_path in config work as before (backward compatibility)."""
     connector = FBICrimeConnector({
         "api_key": "token",
         "url": "https://api.usa.gov/crime/fbi/cde",
+        # No data_path configured
     })
     connector.connected = True
 

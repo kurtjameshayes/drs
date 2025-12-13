@@ -45,6 +45,8 @@ class FBICrimeConnector(BaseConnector):
                 - url: Base API URL
                 - api_key: FBI Crime Data API key
                 - format: Response format (default: JSON)
+                - data_path: Optional JSONPath expression to extract data from API response
+                  (e.g., '$.data', '$.results', '$.response.data')
         """
         super().__init__(config)
         default_base_url = 'https://api.usa.gov/crime/fbi/sapi'
@@ -54,6 +56,9 @@ class FBICrimeConnector(BaseConnector):
         self.session = None
         self.max_retries = config.get('max_retries', 3)
         self.retry_delay = config.get('retry_delay', 1)
+        
+        # JSONPath expression for extracting data from API response
+        self.data_path = config.get('data_path')
 
         base_url_lower = self.base_url.lower()
         self._api_key_param_explicit = 'api_key_param' in config
@@ -124,8 +129,6 @@ class FBICrimeConnector(BaseConnector):
         Args:
             parameters: Query parameters including:
                 - endpoint: API endpoint (e.g., 'estimates/national', 'arrest/national/all')
-                - data_path: Optional JSONPath expression to extract data from response
-                  (e.g., '$.data', '$.results', '$.data[*]')
                 - Additional endpoint-specific parameters (can include placeholders like {from mm-yyyy})
             dynamic_params: Optional dictionary of values to substitute for dynamic placeholders
                 Example: {"from": "01-2023", "to": "12-2023"}
@@ -133,14 +136,17 @@ class FBICrimeConnector(BaseConnector):
         Returns:
             dict: Query results with metadata
             
+        Note:
+            The data_path for extracting data from the API response is configured
+            in the connector_config in MongoDB, not in query parameters.
+            
         Example:
             # With stored query parameters containing placeholders:
             parameters = {
                 "endpoint": "arrest/national/all",
                 "type": "counts",
                 "from": "{from mm-yyyy}",
-                "to": "{to mm-yyyy}",
-                "data_path": "$.data"  # Extract data from response.data
+                "to": "{to mm-yyyy}"
             }
             # Provide actual values at runtime:
             dynamic_params = {"from": "01-2023", "to": "12-2023"}
@@ -152,9 +158,6 @@ class FBICrimeConnector(BaseConnector):
                 raise ConnectionError("Failed to connect to FBI Crime Data API")
         
         try:
-            # Extract data_path before building URL (it's not a query parameter)
-            data_path = parameters.get('data_path')
-            
             # Build the complete request URL with all parameters
             url, query_params = self._build_request_url(parameters, dynamic_params)
             
@@ -163,9 +166,9 @@ class FBICrimeConnector(BaseConnector):
             # Parse response
             data = response.json()
             
-            # Extract data using JSONPath if data_path is specified
-            if data_path:
-                data = self._extract_with_jsonpath(data, data_path)
+            # Extract data using JSONPath if data_path is configured in connector config
+            if self.data_path:
+                data = self._extract_with_jsonpath(data, self.data_path)
             
             # Transform to standard format
             transformed_data = self.transform(data)
@@ -177,7 +180,7 @@ class FBICrimeConnector(BaseConnector):
                     'endpoint': parameters.get('endpoint', ''),
                     'parameters': parameters,
                     'dynamic_params': dynamic_params,
-                    'data_path': data_path,
+                    'data_path': self.data_path,
                     'final_url': url,
                     'status_code': response.status_code
                 }
