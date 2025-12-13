@@ -276,3 +276,192 @@ def test_fbi_crime_connector_execute_with_retry_handles_rate_limit(monkeypatch):
 
     assert connector.session.calls == 2
     assert response.status_code == 200
+
+
+def test_fbi_crime_connector_data_path_extracts_data(monkeypatch):
+    """Test that data_path parameter extracts data from API response using JSONPath."""
+    connector = FBICrimeConnector({
+        "api_key": "token",
+        "url": "https://api.usa.gov/crime/fbi/cde",
+    })
+    connector.connected = True
+
+    captured = {}
+
+    def fake_execute(url, params):
+        captured["url"] = url
+        captured["params"] = params
+        # API response with nested data structure
+        return DummyResponse(200, json_data={
+            "pagination": {"count": 100, "page": 1},
+            "data": [
+                {"year": 2020, "arrests": 1000},
+                {"year": 2021, "arrests": 1100}
+            ],
+            "metadata": {"source": "FBI"}
+        })
+
+    monkeypatch.setattr(connector, "_execute_with_retry", fake_execute)
+
+    # Query with data_path to extract just the 'data' array
+    result = connector.query({
+        "endpoint": "arrest/national/all",
+        "type": "counts",
+        "data_path": "$.data"
+    })
+
+    assert result["success"] is True
+    # The extracted data should be the array from $.data
+    records = result["data"]["data"]
+    assert len(records) == 2
+    assert records[0]["year"] == 2020
+    assert records[1]["year"] == 2021
+    # Verify data_path is not sent as a query parameter
+    assert "data_path" not in captured["params"]
+
+
+def test_fbi_crime_connector_data_path_not_added_to_query_params(monkeypatch):
+    """Test that data_path is not added as a URL query parameter."""
+    connector = FBICrimeConnector({
+        "api_key": "token",
+        "url": "https://api.usa.gov/crime/fbi/cde",
+    })
+    connector.connected = True
+
+    captured = {}
+
+    def fake_execute(url, params):
+        captured["url"] = url
+        captured["params"] = params
+        return DummyResponse(200, json_data={"data": []})
+
+    monkeypatch.setattr(connector, "_execute_with_retry", fake_execute)
+
+    connector.query({
+        "endpoint": "arrest/national/all",
+        "type": "counts",
+        "from": "01-2023",
+        "to": "12-2023",
+        "data_path": "$.data"
+    })
+
+    # data_path should NOT be in query params
+    assert "data_path" not in captured["params"]
+    # Other params should be present
+    assert captured["params"]["type"] == "counts"
+    assert captured["params"]["from"] == "01-2023"
+    assert captured["params"]["to"] == "12-2023"
+
+
+def test_fbi_crime_connector_data_path_with_nested_path(monkeypatch):
+    """Test that data_path works with nested paths like $.response.data."""
+    connector = FBICrimeConnector({
+        "api_key": "token",
+        "url": "https://api.usa.gov/crime/fbi/cde",
+    })
+    connector.connected = True
+
+    def fake_execute(url, params):
+        return DummyResponse(200, json_data={
+            "response": {
+                "status": "ok",
+                "data": {
+                    "items": [
+                        {"id": 1, "value": "A"},
+                        {"id": 2, "value": "B"}
+                    ]
+                }
+            }
+        })
+
+    monkeypatch.setattr(connector, "_execute_with_retry", fake_execute)
+
+    result = connector.query({
+        "endpoint": "test/endpoint",
+        "data_path": "$.response.data.items"
+    })
+
+    assert result["success"] is True
+    records = result["data"]["data"]
+    assert len(records) == 2
+    assert records[0]["id"] == 1
+    assert records[1]["value"] == "B"
+
+
+def test_fbi_crime_connector_data_path_no_match_returns_original(monkeypatch):
+    """Test that when data_path finds no matches, original data is returned."""
+    connector = FBICrimeConnector({
+        "api_key": "token",
+        "url": "https://api.usa.gov/crime/fbi/cde",
+    })
+    connector.connected = True
+
+    original_data = {
+        "results": [{"year": 2020}],
+        "count": 1
+    }
+
+    def fake_execute(url, params):
+        return DummyResponse(200, json_data=original_data)
+
+    monkeypatch.setattr(connector, "_execute_with_retry", fake_execute)
+
+    result = connector.query({
+        "endpoint": "test/endpoint",
+        "data_path": "$.nonexistent.path"
+    })
+
+    assert result["success"] is True
+    # Since path didn't match, original data structure should be used
+    # The transform method should extract 'results' key
+    records = result["data"]["data"]
+    assert len(records) == 1
+    assert records[0]["year"] == 2020
+
+
+def test_fbi_crime_connector_data_path_in_metadata(monkeypatch):
+    """Test that data_path is included in the result metadata."""
+    connector = FBICrimeConnector({
+        "api_key": "token",
+        "url": "https://api.usa.gov/crime/fbi/cde",
+    })
+    connector.connected = True
+
+    def fake_execute(url, params):
+        return DummyResponse(200, json_data={"data": []})
+
+    monkeypatch.setattr(connector, "_execute_with_retry", fake_execute)
+
+    result = connector.query({
+        "endpoint": "test/endpoint",
+        "data_path": "$.data"
+    })
+
+    assert result["metadata"]["data_path"] == "$.data"
+
+
+def test_fbi_crime_connector_no_data_path(monkeypatch):
+    """Test that queries without data_path work as before (backward compatibility)."""
+    connector = FBICrimeConnector({
+        "api_key": "token",
+        "url": "https://api.usa.gov/crime/fbi/cde",
+    })
+    connector.connected = True
+
+    def fake_execute(url, params):
+        return DummyResponse(200, json_data={
+            "results": [{"year": 2020}, {"year": 2021}]
+        })
+
+    monkeypatch.setattr(connector, "_execute_with_retry", fake_execute)
+
+    result = connector.query({
+        "endpoint": "test/endpoint",
+        "type": "counts"
+    })
+
+    assert result["success"] is True
+    # Without data_path, transform should use default 'results' extraction
+    records = result["data"]["data"]
+    assert len(records) == 2
+    assert result["metadata"].get("data_path") is None
