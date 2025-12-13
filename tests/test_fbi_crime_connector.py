@@ -54,7 +54,8 @@ def test_fbi_crime_connector_query_builds_url_and_params(monkeypatch):
     assert captured["params"]["from"] == "2019"
     assert captured["params"]["to"] == "2020"
     assert captured["params"]["api_key"] == "token"
-    assert result["data"]["data"][0]["year"] == "2020"
+    # New standardized output format: data is at result["data"] directly
+    assert result["data"][0]["year"] == "2020"
 
 
 def test_fbi_crime_connector_query_handles_cde_base_url(monkeypatch):
@@ -311,9 +312,9 @@ def test_fbi_crime_connector_data_path_extracts_data(monkeypatch):
         "type": "counts",
     })
 
-    assert result["success"] is True
-    # The extracted data should be the array from $.data
-    records = result["data"]["data"]
+    # New standardized output format: data is at result["data"] directly
+    # ConnectorManager wraps with success, so connector doesn't return success key
+    records = result["data"]
     assert len(records) == 2
     assert records[0]["year"] == 2020
     assert records[1]["year"] == 2021
@@ -382,8 +383,8 @@ def test_fbi_crime_connector_data_path_with_nested_path(monkeypatch):
         "endpoint": "test/endpoint",
     })
 
-    assert result["success"] is True
-    records = result["data"]["data"]
+    # New standardized output format: data is at result["data"] directly
+    records = result["data"]
     assert len(records) == 2
     assert records[0]["id"] == 1
     assert records[1]["value"] == "B"
@@ -412,10 +413,10 @@ def test_fbi_crime_connector_data_path_no_match_returns_original(monkeypatch):
         "endpoint": "test/endpoint",
     })
 
-    assert result["success"] is True
+    # New standardized output format: data is at result["data"] directly
     # Since path didn't match, original data structure should be used
     # The transform method should extract 'results' key
-    records = result["data"]["data"]
+    records = result["data"]
     assert len(records) == 1
     assert records[0]["year"] == 2020
 
@@ -462,8 +463,8 @@ def test_fbi_crime_connector_no_data_path(monkeypatch):
         "type": "counts"
     })
 
-    assert result["success"] is True
+    # New standardized output format: data is at result["data"] directly
     # Without data_path, transform should use default 'results' extraction
-    records = result["data"]["data"]
+    records = result["data"]
     assert len(records) == 2
     assert result["metadata"].get("data_path") is None

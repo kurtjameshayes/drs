@@ -134,7 +134,12 @@ class FBICrimeConnector(BaseConnector):
                 Example: {"from": "01-2023", "to": "12-2023"}
         
         Returns:
-            dict: Query results with metadata
+            dict: Query results in standardized format matching Census connector:
+                {
+                    "metadata": { ... },
+                    "data": [ ... ],
+                    "schema": { ... }
+                }
             
         Note:
             The data_path for extracting data from the API response is configured
@@ -170,21 +175,22 @@ class FBICrimeConnector(BaseConnector):
             if self.data_path:
                 data = self._extract_with_jsonpath(data, self.data_path)
             
-            # Transform to standard format
+            # Transform to standard format (matches Census connector output structure)
             transformed_data = self.transform(data)
             
-            return {
-                'success': True,
-                'data': transformed_data,
-                'metadata': {
-                    'endpoint': parameters.get('endpoint', ''),
-                    'parameters': parameters,
-                    'dynamic_params': dynamic_params,
-                    'data_path': self.data_path,
-                    'final_url': url,
-                    'status_code': response.status_code
-                }
-            }
+            # Merge query execution metadata into the transform result's metadata
+            # This keeps the output structure consistent with Census connector
+            transformed_data['metadata'].update({
+                'endpoint': parameters.get('endpoint', ''),
+                'parameters': parameters,
+                'dynamic_params': dynamic_params,
+                'data_path': self.data_path,
+                'final_url': url,
+                'status_code': response.status_code
+            })
+            
+            # Return the transformed data directly (ConnectorManager wraps with success/data)
+            return transformed_data
             
         except requests.exceptions.RequestException as e:
             logger.error(f"FBI Crime Data API request failed: {str(e)}")
@@ -496,11 +502,18 @@ class FBICrimeConnector(BaseConnector):
         """
         Transform FBI Crime Data API response to standard format.
         
+        Returns data in the same structure as Census connector:
+        {
+            "metadata": { ... },
+            "data": [ ... ],
+            "schema": { "fields": [ ... ] }
+        }
+        
         Args:
             data: Raw API response data
             
         Returns:
-            dict: Transformed data in standard format
+            dict: Transformed data in standard format matching Census connector
         """
         try:
             # FBI Crime Data API returns data in various formats
@@ -523,18 +536,52 @@ class FBICrimeConnector(BaseConnector):
             if not isinstance(records, list):
                 records = [records]
             
+            # Build schema from first record (similar to Census connector)
+            schema = {"fields": self._create_schema_from_records(records)}
+            
             return {
-                'data': records,
                 'metadata': {
-                    'source': 'FBI Crime Data Explorer',
-                    'record_count': len(records),
-                    'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S')
-                }
+                    'source_id': 'fbi_crime',
+                    'source_name': 'FBI Crime Data Explorer',
+                    'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S'),
+                    'record_count': len(records)
+                },
+                'data': records,
+                'schema': schema
             }
             
         except Exception as e:
             logger.error(f"Error transforming FBI Crime Data: {str(e)}")
             raise
+    
+    def _create_schema_from_records(self, records: List[Any]) -> List[Dict[str, str]]:
+        """
+        Create schema definition from records.
+        
+        Args:
+            records: List of data records
+            
+        Returns:
+            List of field definitions
+        """
+        fields = []
+        if records and isinstance(records[0], dict):
+            for key in records[0].keys():
+                field_type = "string"
+                value = records[0].get(key)
+                if isinstance(value, (int, float)):
+                    field_type = "number"
+                elif isinstance(value, bool):
+                    field_type = "boolean"
+                elif isinstance(value, dict):
+                    field_type = "object"
+                elif isinstance(value, list):
+                    field_type = "array"
+                fields.append({
+                    "name": str(key),
+                    "type": field_type
+                })
+        return fields
     
     def get_capabilities(self) -> Dict[str, Any]:
         """
