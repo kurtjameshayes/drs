@@ -468,3 +468,40 @@ def test_fbi_crime_connector_no_data_path(monkeypatch):
     records = result["data"]
     assert len(records) == 2
     assert result["metadata"].get("data_path") is None
+
+
+def test_fbi_crime_connector_tooltip_y_axis_header_reshapes_time_series(monkeypatch):
+    """
+    When FBI CDE responses include tooltip metadata (leftYAxisHeaders.yAxisHeaderActual),
+    and data_path extracts the data element, the connector should reshape rows into:
+      [{"date": <date>, "<y_axis_header_actual>": <value>}, ...]
+    """
+    connector = FBICrimeConnector(
+        {
+            "api_key": "token",
+            "url": "https://api.usa.gov/crime/fbi/cde",
+            "data_path": "$.data",
+        }
+    )
+    connector.connected = True
+
+    def fake_execute(url, params):
+        return DummyResponse(
+            200,
+            json_data={
+                "tooltip": {"leftYAxisHeaders": {"yAxisHeaderActual": "Violent Crime"}},
+                "data": [
+                    {"date": "2023-01", "value": 10},
+                    {"date": "2023-02", "value": 12},
+                ],
+            },
+        )
+
+    monkeypatch.setattr(connector, "_execute_with_retry", fake_execute)
+
+    result = connector.query({"endpoint": "some/timeseries/endpoint"})
+
+    assert result["data"] == [
+        {"date": "2023-01", "Violent Crime": 10},
+        {"date": "2023-02", "Violent Crime": 12},
+    ]
