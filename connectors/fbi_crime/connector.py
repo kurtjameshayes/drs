@@ -45,6 +45,8 @@ class FBICrimeConnector(BaseConnector):
                 - url: Base API URL
                 - api_key: FBI Crime Data API key
                 - format: Response format (default: JSON)
+                - data_path: Optional JSONPath expression to extract data from API response
+                  (e.g., '$.data', '$.results', '$.response.data')
         """
         super().__init__(config)
         default_base_url = 'https://api.usa.gov/crime/fbi/sapi'
@@ -54,6 +56,9 @@ class FBICrimeConnector(BaseConnector):
         self.session = None
         self.max_retries = config.get('max_retries', 3)
         self.retry_delay = config.get('retry_delay', 1)
+        
+        # JSONPath expression for extracting data from API response
+        self.data_path = config.get('data_path')
 
         base_url_lower = self.base_url.lower()
         self._api_key_param_explicit = 'api_key_param' in config
@@ -131,6 +136,10 @@ class FBICrimeConnector(BaseConnector):
         Returns:
             dict: Query results with metadata
             
+        Note:
+            The data_path for extracting data from the API response is configured
+            in the connector_config in MongoDB, not in query parameters.
+            
         Example:
             # With stored query parameters containing placeholders:
             parameters = {
@@ -157,6 +166,10 @@ class FBICrimeConnector(BaseConnector):
             # Parse response
             data = response.json()
             
+            # Extract data using JSONPath if data_path is configured in connector config
+            if self.data_path:
+                data = self._extract_with_jsonpath(data, self.data_path)
+            
             # Transform to standard format
             transformed_data = self.transform(data)
             
@@ -167,6 +180,7 @@ class FBICrimeConnector(BaseConnector):
                     'endpoint': parameters.get('endpoint', ''),
                     'parameters': parameters,
                     'dynamic_params': dynamic_params,
+                    'data_path': self.data_path,
                     'final_url': url,
                     'status_code': response.status_code
                 }
@@ -178,6 +192,21 @@ class FBICrimeConnector(BaseConnector):
         except Exception as e:
             logger.error(f"Error querying FBI Crime Data API: {str(e)}")
             raise
+    
+    def _extract_with_jsonpath(self, data: Any, data_path: str) -> Any:
+        """
+        Extract data from API response using JSONPath expression.
+        
+        Delegates to the base class implementation.
+        
+        Args:
+            data: Raw API response data
+            data_path: JSONPath expression (e.g., '$.data', '$.results[*]')
+            
+        Returns:
+            Extracted data based on JSONPath, or original data if extraction fails
+        """
+        return self.extract_with_jsonpath(data, data_path)
     
     def _execute_with_retry(self, url: str, params: Dict[str, Any]) -> requests.Response:
         """
@@ -349,7 +378,7 @@ class FBICrimeConnector(BaseConnector):
         dynamic_placeholders: Dict[str, str] = {}  # Maps param name -> placeholder
         
         # Keys that should not be added as query parameters
-        excluded_keys = {'endpoint', 'api_key', 'API_KEY', self.api_key_param}
+        excluded_keys = {'endpoint', 'api_key', 'API_KEY', self.api_key_param, 'data_path'}
         
         # Categorize parameters as hard-coded or dynamic
         for key, value in query.items():
