@@ -169,11 +169,23 @@ class FBICrimeConnector(BaseConnector):
             response = self._execute_with_retry(url, query_params)
             
             # Parse response
-            data = response.json()
+            raw_response_json = response.json()
+
+            # Gather tooltip/Y-axis header info BEFORE extracting data via JSONPath.
+            # Some FBI CDE responses include helpful labeling metadata that can be lost
+            # when we extract only the data element.
+            y_axis_header_actual = self._find_left_y_axis_header_actual(raw_response_json)
             
             # Extract data using JSONPath if data_path is configured in connector config
             if self.data_path:
-                data = self._extract_with_jsonpath(data, self.data_path)
+                data = self._extract_with_jsonpath(raw_response_json, self.data_path)
+            else:
+                data = raw_response_json
+
+            # If tooltip metadata is present, reshape common time-series payloads into
+            # rows of {"date": ..., "<y_axis_header_actual>": ... }.
+            if y_axis_header_actual:
+                data = self._reshape_rows_with_date_and_y_axis_header(data, y_axis_header_actual)
             
             # Transform to standard format (matches Census connector output structure)
             transformed_data = self.transform(data)
@@ -198,6 +210,94 @@ class FBICrimeConnector(BaseConnector):
         except Exception as e:
             logger.error(f"Error querying FBI Crime Data API: {str(e)}")
             raise
+
+    @staticmethod
+    def _find_left_y_axis_header_actual(payload: Any) -> Optional[str]:
+        """
+        Best-effort extraction of tooltip labeling metadata.
+
+        Some FBI CDE responses include nested tooltip metadata containing
+        leftYAxisHeaders.yAxisHeaderActual, used to label the Y-axis series.
+        This method searches recursively and returns the first non-empty string found.
+        """
+
+        def _walk(node: Any) -> Optional[str]:
+            if isinstance(node, dict):
+                # Direct match at this node
+                left = node.get("leftYAxisHeaders")
+                if isinstance(left, dict):
+                    value = left.get("yAxisHeaderActual")
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+                # Recurse into children
+                for v in node.values():
+                    found = _walk(v)
+                    if found:
+                        return found
+            elif isinstance(node, list):
+                for item in node:
+                    found = _walk(item)
+                    if found:
+                        return found
+            return None
+
+        return _walk(payload)
+
+    @staticmethod
+    def _reshape_rows_with_date_and_y_axis_header(data: Any, y_axis_header_actual: str) -> Any:
+        """
+        Reshape data into an array of JSON rows:
+        - First column/key: "date"
+        - Second column/key: y_axis_header_actual (from tooltip metadata)
+
+        This is intended for time-series style payloads where each row has a date and a value.
+        If the input doesn't match expected shapes, it's returned unchanged.
+        """
+        header = (y_axis_header_actual or "").strip()
+        if not header:
+            return data
+
+        def _extract_value_from_row(row: Dict[str, Any]) -> Any:
+            # Prefer common scalar keys in chart payloads.
+            for key in ("value", "count", "y", "data"):
+                if key in row and not isinstance(row.get(key), (dict, list)):
+                    return row.get(key)
+            # Fallback: if row has a single non-date scalar, use it.
+            for k, v in row.items():
+                if k == "date":
+                    continue
+                if not isinstance(v, (dict, list)):
+                    return v
+            return None
+
+        # Case 1: list of dict rows containing 'date'
+        if isinstance(data, list):
+            reshaped: List[Any] = []
+            for item in data:
+                if isinstance(item, dict) and "date" in item:
+                    value = _extract_value_from_row(item)
+                    if value is not None:
+                        reshaped.append({"date": item.get("date"), header: value})
+                        continue
+                reshaped.append(item)
+            return reshaped
+
+        # Case 2: dict with parallel arrays (e.g., {"date": [...], "value": [...]})
+        if isinstance(data, dict) and isinstance(data.get("date"), list):
+            dates = data.get("date") or []
+            values_key = next(
+                (
+                    k
+                    for k in ("value", "count", "y", "data")
+                    if isinstance(data.get(k), list)
+                ),
+                None,
+            )
+            if values_key:
+                values = data.get(values_key) or []
+                return [{"date": d, header: v} for d, v in zip(dates, values)]
+
+        return data
     
     def _extract_with_jsonpath(self, data: Any, data_path: str) -> Any:
         """
