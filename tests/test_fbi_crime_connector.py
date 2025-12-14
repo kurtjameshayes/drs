@@ -542,3 +542,46 @@ def test_fbi_crime_connector_reshape_parallel_arrays_with_nonstandard_key(monkey
         {"date": "2023-02", "Arrest Count": 150},
         {"date": "2023-03", "Arrest Count": 120},
     ]
+
+
+def test_fbi_crime_connector_reshape_nested_dict_date_to_value_mapping(monkeypatch):
+    """
+    When FBI CDE responses have a nested dict structure where a value is itself
+    a dict mapping dates to scalar values, e.g.:
+        {'United States Arrests': {'01-2023': 579876, '02-2023': 535517}}
+    the connector should reshape it to:
+        [{"date": "01-2023", "<y_axis_header>": 579876}, ...]
+    """
+    connector = FBICrimeConnector(
+        {
+            "api_key": "token",
+            "url": "https://api.usa.gov/crime/fbi/cde",
+            "data_path": "$.data",
+        }
+    )
+    connector.connected = True
+
+    def fake_execute(url, params):
+        return DummyResponse(
+            200,
+            json_data={
+                "tooltip": {"leftYAxisHeaders": {"yAxisHeaderActual": "Arrests"}},
+                "data": {
+                    "United States Arrests": {
+                        "01-2023": 579876,
+                        "02-2023": 535517,
+                        "03-2023": 609655,
+                    }
+                },
+            },
+        )
+
+    monkeypatch.setattr(connector, "_execute_with_retry", fake_execute)
+
+    result = connector.query({"endpoint": "arrest/national/all"})
+
+    assert result["data"] == [
+        {"date": "01-2023", "Arrests": 579876},
+        {"date": "02-2023", "Arrests": 535517},
+        {"date": "03-2023", "Arrests": 609655},
+    ]
