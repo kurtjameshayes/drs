@@ -306,6 +306,17 @@ class FBICrimeConnector(BaseConnector):
                 values = data.get(values_key) or []
                 return [{"date": d, header: v} for d, v in zip(dates, values)]
 
+        # Case 3: dict where a value is itself a dict mapping dates to scalar values
+        # e.g., {'United States Arrests': {'01-2023': 579876, '02-2023': 535517}}
+        # This pattern appears in some FBI CDE arrest endpoints.
+        if isinstance(data, dict) and "date" not in data:
+            for key, value in data.items():
+                if isinstance(value, dict) and value:
+                    # Check if this looks like a date->value mapping
+                    # by verifying all values are scalars (not nested dicts/lists)
+                    if all(not isinstance(v, (dict, list)) for v in value.values()):
+                        return [{"date": d, header: v} for d, v in value.items()]
+
         return data
     
     def _extract_with_jsonpath(self, data: Any, data_path: str) -> Any:
