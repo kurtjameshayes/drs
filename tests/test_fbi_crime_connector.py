@@ -505,3 +505,40 @@ def test_fbi_crime_connector_tooltip_y_axis_header_reshapes_time_series(monkeypa
         {"date": "2023-01", "Violent Crime": 10},
         {"date": "2023-02", "Violent Crime": 12},
     ]
+
+
+def test_fbi_crime_connector_reshape_parallel_arrays_with_nonstandard_key(monkeypatch):
+    """
+    When FBI CDE responses have parallel arrays (e.g., {"date": [...], "arrests": [...]}),
+    the connector should reshape them even when the value key is not a standard name.
+    """
+    connector = FBICrimeConnector(
+        {
+            "api_key": "token",
+            "url": "https://api.usa.gov/crime/fbi/cde",
+            "data_path": "$.data",
+        }
+    )
+    connector.connected = True
+
+    def fake_execute(url, params):
+        return DummyResponse(
+            200,
+            json_data={
+                "tooltip": {"leftYAxisHeaders": {"yAxisHeaderActual": "Arrest Count"}},
+                "data": {
+                    "date": ["2023-01", "2023-02", "2023-03"],
+                    "arrests": [100, 150, 120],
+                },
+            },
+        )
+
+    monkeypatch.setattr(connector, "_execute_with_retry", fake_execute)
+
+    result = connector.query({"endpoint": "arrest/national/all"})
+
+    assert result["data"] == [
+        {"date": "2023-01", "Arrest Count": 100},
+        {"date": "2023-02", "Arrest Count": 150},
+        {"date": "2023-03", "Arrest Count": 120},
+    ]
