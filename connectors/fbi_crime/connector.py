@@ -285,6 +285,7 @@ class FBICrimeConnector(BaseConnector):
         # Case 2: dict with parallel arrays (e.g., {"date": [...], "value": [...]})
         if isinstance(data, dict) and isinstance(data.get("date"), list):
             dates = data.get("date") or []
+            # Prefer common scalar keys in chart payloads.
             values_key = next(
                 (
                     k
@@ -293,6 +294,14 @@ class FBICrimeConnector(BaseConnector):
                 ),
                 None,
             )
+            # Fallback: if no common key found, use any other list of matching length.
+            if not values_key:
+                for k, v in data.items():
+                    if k == "date":
+                        continue
+                    if isinstance(v, list) and len(v) == len(dates):
+                        values_key = k
+                        break
             if values_key:
                 values = data.get(values_key) or []
                 return [{"date": d, header: v} for d, v in zip(dates, values)]
