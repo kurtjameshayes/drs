@@ -1,5 +1,5 @@
 import requests
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from core.base_connector import BaseConnector
 import logging
 import time
@@ -26,13 +26,13 @@ class USDANASSConnector(BaseConnector):
             raise ValueError("API key is required for USDA NASS connector")
     
     def connect(self) -> bool:
-        """Establish connection by validating API key."""
-        try:
-            self.connected = self.validate()
-            return self.connected
-        except Exception as e:
-            logger.error(f"Connection failed: {str(e)}")
-            return False
+        """
+        Establish logical connection without issuing a validation request.
+        
+        API validation can be run explicitly via validate().
+        """
+        self.connected = True
+        return True
     
     def disconnect(self) -> bool:
         """Close connection (no persistent connection for REST API)."""
@@ -50,19 +50,19 @@ class USDANASSConnector(BaseConnector):
                 "state_alpha": "IA",
                 "statisticcat_desc": "PRODUCTION"
             }
-            
-            response = requests.get(
-                f"{self.base_url}/api_GET",
-                params=test_params,
-                timeout=10
-            )
+            url = f"{self.base_url}/api_GET"
+            full_url = self._compose_request_url(url, test_params)
+            logger.info("Validating USDA NASS API access url=%s", full_url)
+
+            response = requests.get(url, params=test_params, timeout=10)
             
             return response.status_code == 200
         except Exception as e:
             logger.error(f"Validation failed: {str(e)}")
             return False
     
-    def query(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+    def query(self, parameters: Dict[str, Any],
+              dynamic_params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Execute query against USDA NASS QuickStats API.
         
@@ -74,6 +74,7 @@ class USDANASSConnector(BaseConnector):
                 - county_name: County name
                 - statisticcat_desc: Statistic category
                 - short_desc: Short description filter
+            dynamic_params: Optional dynamic parameter values for placeholder substitution
                 
         Returns:
             Dict containing query results and metadata
@@ -91,8 +92,16 @@ class USDANASSConnector(BaseConnector):
         # Execute query with retry logic
         for attempt in range(self.max_retries):
             try:
+                url = f"{self.base_url}/api_GET"
+                full_url = self._compose_request_url(url, query_params)
+                logger.info(
+                    "Executing USDA NASS API query attempt=%s url=%s",
+                    attempt + 1,
+                    full_url,
+                )
+
                 response = requests.get(
-                    f"{self.base_url}/api_GET",
+                    url,
                     params=query_params,
                     timeout=30
                 )

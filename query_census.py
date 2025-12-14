@@ -167,7 +167,7 @@ def check_connector_status():
         tuple: (is_ready: bool, message: str)
     """
     try:
-        config_model = Connector Config()
+        config_model = ConnectorConfig()
         config = config_model.get_by_source_id("census_api")
         
         if not config:
