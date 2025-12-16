@@ -136,15 +136,23 @@ class CensusConnector(BaseConnector):
         
         raise Exception("Max retries exceeded")
     
+    # Columns that should remain as strings (geographic identifiers)
+    STRING_COLUMNS = frozenset({
+        "NAME",
+        "zip code tabulation area",
+    })
+
     def transform(self, data: Any) -> Dict[str, Any]:
         """
         Transform Census data to standardized format.
-        
+
         Census API returns data as array of arrays with first row as headers.
-        
+        Numeric values are automatically converted from strings, except for
+        geographic identifiers like zip code tabulation area.
+
         Args:
             data: Raw API response data
-            
+
         Returns:
             Dict containing standardized data with metadata
         """
@@ -154,44 +162,101 @@ class CensusConnector(BaseConnector):
                 "data": [],
                 "schema": {"fields": []}
             }
-        
+
         # First row contains headers
         headers = data[0]
-        
-        # Convert remaining rows to dictionaries
+
+        # Track detected types for schema
+        column_types: Dict[str, str] = {header: "string" for header in headers}
+
+        # Convert remaining rows to dictionaries with numeric conversion
         records = []
         for row in data[1:]:
             record = {}
             for i, header in enumerate(headers):
-                record[header] = row[i] if i < len(row) else None
+                value = row[i] if i < len(row) else None
+                converted_value, detected_type = self._convert_value(header, value)
+                record[header] = converted_value
+                # Update column type if we detected a numeric type
+                if detected_type != "string" and column_types[header] == "string":
+                    column_types[header] = detected_type
             records.append(record)
-        
+
         # Create standardized response
         standardized = {
             "metadata": self._create_metadata(len(records), {}),
             "data": records,
             "schema": {
-                "fields": self._create_schema_from_headers(headers)
+                "fields": self._create_schema_from_headers(headers, column_types)
             }
         }
-        
+
         return standardized
+
+    def _convert_value(self, header: str, value: Any) -> tuple:
+        """
+        Convert a value to numeric if appropriate.
+
+        Args:
+            header: Column header name
+            value: Raw value from Census API
+
+        Returns:
+            Tuple of (converted_value, detected_type)
+        """
+        # Keep None as-is
+        if value is None:
+            return None, "string"
+
+        # Keep string columns as strings
+        if header in self.STRING_COLUMNS:
+            return value, "string"
+
+        # Only try to convert string values
+        if not isinstance(value, str):
+            return value, "string"
+
+        # Try integer conversion first
+        try:
+            int_val = int(value)
+            # Only convert if it converts back to the same string (preserve leading zeros)
+            if str(int_val) == value:
+                return int_val, "integer"
+        except (ValueError, TypeError):
+            pass
+
+        # Try float conversion (only if it looks like a float - has decimal point)
+        if '.' in value:
+            try:
+                float_val = float(value)
+                return float_val, "float"
+            except (ValueError, TypeError):
+                pass
+
+        # Keep as string if conversion fails
+        return value, "string"
     
-    def _create_schema_from_headers(self, headers: List[str]) -> List[Dict[str, str]]:
+    def _create_schema_from_headers(
+        self, headers: List[str], column_types: Optional[Dict[str, str]] = None
+    ) -> List[Dict[str, str]]:
         """
         Create schema definition from headers.
-        
+
         Args:
             headers: List of column headers
-            
+            column_types: Optional dict mapping header names to detected types
+
         Returns:
             List of field definitions
         """
         fields = []
         for header in headers:
+            field_type = "string"
+            if column_types and header in column_types:
+                field_type = column_types[header]
             fields.append({
                 "name": header,
-                "type": "string"  # Census API returns all as strings
+                "type": field_type
             })
         return fields
     
