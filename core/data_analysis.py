@@ -221,12 +221,23 @@ class DataAnalysisEngine:
         predictions = model.predict(X_test)
 
         mse = mean_squared_error(y_test, predictions)
+
+        # Build graphing data: all predictions, actuals, and features for visualization
+        graphing_data = {
+            "predictions": predictions.tolist(),
+            "actuals": y_test.tolist(),
+            "features": X_test.tolist(),
+            "feature_names": features,
+            "n_samples": len(predictions),
+        }
+
         return {
             "coefficients": dict(zip(features, model.coef_.tolist())),
             "intercept": float(model.intercept_),
             "r2_score": float(r2_score(y_test, predictions)),
             "rmse": float(np.sqrt(mse)),
             "predictions_sample": predictions[:5].tolist(),
+            "graphing_data": graphing_data,
         }
 
     def random_forest_regression(
@@ -263,11 +274,22 @@ class DataAnalysisEngine:
         predictions = model.predict(X_test)
 
         mse = mean_squared_error(y_test, predictions)
+
+        # Build graphing data: all predictions, actuals, and features for visualization
+        graphing_data = {
+            "predictions": predictions.tolist(),
+            "actuals": y_test.tolist(),
+            "features": X_test.tolist(),
+            "feature_names": features,
+            "n_samples": len(predictions),
+        }
+
         return {
             "feature_importance": dict(zip(features, model.feature_importances_.tolist())),
             "r2_score": float(r2_score(y_test, predictions)),
             "rmse": float(np.sqrt(mse)),
             "predictions_sample": predictions[:5].tolist(),
+            "graphing_data": graphing_data,
         }
 
     def multivariate_analysis(

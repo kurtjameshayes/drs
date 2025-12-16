@@ -68,6 +68,85 @@ def test_regression_methods(sample_df):
     assert "feature_importance" in forest
 
 
+def test_linear_regression_graphing_data(sample_df):
+    """Test that linear regression returns sufficient data for graphing predictions vs actuals."""
+    engine = DataAnalysisEngine()
+
+    result = engine.linear_regression(
+        sample_df,
+        features=["harvest"],
+        target="value",
+    )
+
+    # Verify graphing_data is present
+    assert "graphing_data" in result
+    graphing_data = result["graphing_data"]
+
+    # Verify all required fields for graphing
+    assert "predictions" in graphing_data
+    assert "actuals" in graphing_data
+    assert "features" in graphing_data
+    assert "feature_names" in graphing_data
+    assert "n_samples" in graphing_data
+
+    # Verify data lengths match for pairing predictions with actuals
+    assert len(graphing_data["predictions"]) == len(graphing_data["actuals"])
+    assert len(graphing_data["features"]) == len(graphing_data["predictions"])
+    assert graphing_data["n_samples"] == len(graphing_data["predictions"])
+
+    # Verify feature names are correct
+    assert graphing_data["feature_names"] == ["harvest"]
+
+
+def test_random_forest_regression_graphing_data(sample_df):
+    """Test that random forest regression returns sufficient data for graphing predictions vs actuals."""
+    engine = DataAnalysisEngine()
+
+    result = engine.random_forest_regression(
+        sample_df,
+        features=["harvest"],
+        target="value",
+        n_estimators=50,
+    )
+
+    # Verify graphing_data is present
+    assert "graphing_data" in result
+    graphing_data = result["graphing_data"]
+
+    # Verify all required fields for graphing
+    assert "predictions" in graphing_data
+    assert "actuals" in graphing_data
+    assert "features" in graphing_data
+    assert "feature_names" in graphing_data
+    assert "n_samples" in graphing_data
+
+    # Verify data lengths match for pairing predictions with actuals
+    assert len(graphing_data["predictions"]) == len(graphing_data["actuals"])
+    assert len(graphing_data["features"]) == len(graphing_data["predictions"])
+    assert graphing_data["n_samples"] == len(graphing_data["predictions"])
+
+    # Verify feature names are correct
+    assert graphing_data["feature_names"] == ["harvest"]
+
+
+def test_predictive_analysis_graphing_data(sample_df):
+    """Test that predictive_analysis wrapper also includes graphing data."""
+    engine = DataAnalysisEngine()
+
+    # Test with forest model
+    result = engine.predictive_analysis(
+        sample_df,
+        features=["harvest"],
+        target="value",
+        model_type="forest",
+        n_estimators=25,
+    )
+
+    assert "graphing_data" in result
+    graphing_data = result["graphing_data"]
+    assert len(graphing_data["predictions"]) == len(graphing_data["actuals"])
+
+
 def test_multivariate_and_predictive(sample_df):
     engine = DataAnalysisEngine()
 
