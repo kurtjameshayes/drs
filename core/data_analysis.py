@@ -7,8 +7,10 @@ from scipy import stats
 from sklearn.decomposition import PCA
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.metrics import mean_squared_error, r2_score, accuracy_score, f1_score
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+import xgboost as xgb
 
 logger = logging.getLogger(__name__)
 
@@ -221,12 +223,23 @@ class DataAnalysisEngine:
         predictions = model.predict(X_test)
 
         mse = mean_squared_error(y_test, predictions)
+
+        # Build graphing data: all predictions, actuals, and features for visualization
+        graphing_data = {
+            "predictions": predictions.tolist(),
+            "actuals": y_test.tolist(),
+            "features": X_test.tolist(),
+            "feature_names": features,
+            "n_samples": len(predictions),
+        }
+
         return {
             "coefficients": dict(zip(features, model.coef_.tolist())),
             "intercept": float(model.intercept_),
             "r2_score": float(r2_score(y_test, predictions)),
             "rmse": float(np.sqrt(mse)),
             "predictions_sample": predictions[:5].tolist(),
+            "graphing_data": graphing_data,
         }
 
     def random_forest_regression(
@@ -263,11 +276,216 @@ class DataAnalysisEngine:
         predictions = model.predict(X_test)
 
         mse = mean_squared_error(y_test, predictions)
+
+        # Build graphing data: all predictions, actuals, and features for visualization
+        graphing_data = {
+            "predictions": predictions.tolist(),
+            "actuals": y_test.tolist(),
+            "features": X_test.tolist(),
+            "feature_names": features,
+            "n_samples": len(predictions),
+        }
+
         return {
             "feature_importance": dict(zip(features, model.feature_importances_.tolist())),
             "r2_score": float(r2_score(y_test, predictions)),
             "rmse": float(np.sqrt(mse)),
             "predictions_sample": predictions[:5].tolist(),
+            "graphing_data": graphing_data,
+        }
+
+    def xgboost_regression(
+        self,
+        df: pd.DataFrame,
+        features: List[str],
+        target: str,
+        n_estimators: int = 100,
+        max_depth: int = 6,
+        learning_rate: float = 0.1,
+        subsample: float = 0.8,
+        colsample_bytree: float = 0.8,
+        reg_alpha: float = 0.0,
+        reg_lambda: float = 1.0,
+        test_size: float = 0.2,
+        random_state: int = 42,
+    ) -> Dict[str, Any]:
+        """
+        Train an XGBoost regression model with configurable hyperparameters.
+
+        XGBoost (eXtreme Gradient Boosting) is a highly efficient implementation of
+        gradient boosted decision trees, known for strong performance on tabular data.
+
+        Args:
+            df: Input DataFrame containing features and target
+            features: List of feature column names
+            target: Target column name
+            n_estimators: Number of boosting rounds (trees)
+            max_depth: Maximum tree depth (controls complexity)
+            learning_rate: Step size shrinkage to prevent overfitting
+            subsample: Fraction of samples used for each tree
+            colsample_bytree: Fraction of features used for each tree
+            reg_alpha: L1 regularization term
+            reg_lambda: L2 regularization term
+            test_size: Fraction of data for testing
+            random_state: Random seed for reproducibility
+
+        Returns:
+            Dict containing feature importance, R², RMSE, and sample predictions
+        """
+        dataset = self._select_columns(
+            df,
+            features + [target],
+            context=f"xgboost_regression (target={target})",
+        ).dropna()
+        if len(dataset) < 5:
+            raise ValueError("Not enough rows for XGBoost regression")
+
+        X = dataset[features].values
+        y = dataset[target].values
+
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, random_state=random_state
+        )
+
+        model = xgb.XGBRegressor(
+            n_estimators=n_estimators,
+            max_depth=max_depth,
+            learning_rate=learning_rate,
+            subsample=subsample,
+            colsample_bytree=colsample_bytree,
+            reg_alpha=reg_alpha,
+            reg_lambda=reg_lambda,
+            random_state=random_state,
+            verbosity=0,
+        )
+        model.fit(X_train, y_train)
+        predictions = model.predict(X_test)
+
+        mse = mean_squared_error(y_test, predictions)
+        return {
+            "feature_importance": dict(zip(features, model.feature_importances_.tolist())),
+            "r2_score": float(r2_score(y_test, predictions)),
+            "rmse": float(np.sqrt(mse)),
+            "predictions_sample": predictions[:5].tolist(),
+            "model_params": {
+                "n_estimators": n_estimators,
+                "max_depth": max_depth,
+                "learning_rate": learning_rate,
+                "subsample": subsample,
+                "colsample_bytree": colsample_bytree,
+                "reg_alpha": reg_alpha,
+                "reg_lambda": reg_lambda,
+            },
+        }
+
+    def xgboost_classification(
+        self,
+        df: pd.DataFrame,
+        features: List[str],
+        target: str,
+        n_estimators: int = 100,
+        max_depth: int = 6,
+        learning_rate: float = 0.1,
+        subsample: float = 0.8,
+        colsample_bytree: float = 0.8,
+        reg_alpha: float = 0.0,
+        reg_lambda: float = 1.0,
+        test_size: float = 0.2,
+        random_state: int = 42,
+    ) -> Dict[str, Any]:
+        """
+        Train an XGBoost classification model for categorical target prediction.
+
+        Supports both binary and multi-class classification with automatic
+        objective selection based on the number of classes.
+
+        Args:
+            df: Input DataFrame containing features and target
+            features: List of feature column names
+            target: Target column name (categorical)
+            n_estimators: Number of boosting rounds (trees)
+            max_depth: Maximum tree depth (controls complexity)
+            learning_rate: Step size shrinkage to prevent overfitting
+            subsample: Fraction of samples used for each tree
+            colsample_bytree: Fraction of features used for each tree
+            reg_alpha: L1 regularization term
+            reg_lambda: L2 regularization term
+            test_size: Fraction of data for testing
+            random_state: Random seed for reproducibility
+
+        Returns:
+            Dict containing accuracy, F1 score, feature importance, class labels,
+            and sample predictions
+        """
+        dataset = self._select_columns(
+            df,
+            features + [target],
+            context=f"xgboost_classification (target={target})",
+        ).dropna()
+        if len(dataset) < 5:
+            raise ValueError("Not enough rows for XGBoost classification")
+
+        X = dataset[features].values
+        y_raw = dataset[target].values
+
+        # Encode categorical target labels
+        label_encoder = LabelEncoder()
+        y = label_encoder.fit_transform(y_raw)
+        num_classes = len(label_encoder.classes_)
+
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, random_state=random_state, stratify=y
+        )
+
+        # Select objective based on number of classes
+        if num_classes == 2:
+            objective = "binary:logistic"
+        else:
+            objective = "multi:softmax"
+
+        model = xgb.XGBClassifier(
+            n_estimators=n_estimators,
+            max_depth=max_depth,
+            learning_rate=learning_rate,
+            subsample=subsample,
+            colsample_bytree=colsample_bytree,
+            reg_alpha=reg_alpha,
+            reg_lambda=reg_lambda,
+            objective=objective,
+            num_class=num_classes if num_classes > 2 else None,
+            random_state=random_state,
+            verbosity=0,
+            use_label_encoder=False,
+        )
+        model.fit(X_train, y_train)
+        predictions = model.predict(X_test)
+
+        # Decode predictions back to original labels
+        predictions_decoded = label_encoder.inverse_transform(predictions)
+        y_test_decoded = label_encoder.inverse_transform(y_test)
+
+        # Calculate metrics
+        accuracy = accuracy_score(y_test, predictions)
+        f1 = f1_score(y_test, predictions, average="weighted")
+
+        return {
+            "accuracy": float(accuracy),
+            "f1_score": float(f1),
+            "feature_importance": dict(zip(features, model.feature_importances_.tolist())),
+            "class_labels": label_encoder.classes_.tolist(),
+            "num_classes": num_classes,
+            "predictions_sample": predictions_decoded[:5].tolist(),
+            "actual_sample": y_test_decoded[:5].tolist(),
+            "model_params": {
+                "n_estimators": n_estimators,
+                "max_depth": max_depth,
+                "learning_rate": learning_rate,
+                "subsample": subsample,
+                "colsample_bytree": colsample_bytree,
+                "reg_alpha": reg_alpha,
+                "reg_lambda": reg_lambda,
+                "objective": objective,
+            },
         }
 
     def multivariate_analysis(
@@ -302,11 +520,23 @@ class DataAnalysisEngine:
         model_type: str = "linear",
         **kwargs,
     ) -> Dict[str, Any]:
+        """
+        Unified interface for running predictive models.
+
+        Supported model_type values:
+            - "linear": Linear regression
+            - "forest" / "random_forest": Random Forest regression
+            - "xgboost": XGBoost regression (gradient boosted trees)
+
+        Additional kwargs are passed to the underlying model method.
+        """
         model_type = model_type.lower()
         if model_type == "linear":
             result = self.linear_regression(df, features, target, **kwargs)
         elif model_type in {"forest", "random_forest"}:
             result = self.random_forest_regression(df, features, target, **kwargs)
+        elif model_type == "xgboost":
+            result = self.xgboost_regression(df, features, target, **kwargs)
         else:
             raise ValueError(f"Unsupported predictive model: {model_type}")
 
@@ -322,10 +552,12 @@ class DataAnalysisEngine:
             "exploratory": True,
             "linear_regression": {"features": ["x1", "x2"], "target": "y"},
             "random_forest": {"features": ["x1"], "target": "y"},
+            "xgboost": {"features": ["x1", "x2"], "target": "y", "learning_rate": 0.1},
+            "xgboost_classification": {"features": ["x1", "x2"], "target": "category"},
             "time_series": {"time_column": "date", "target_column": "value", "freq": "M"},
             "inferential_tests": [{"x": "x1", "y": "y", "test": "pearson"}],
             "multivariate": {"features": ["x1", "x2", "x3"], "n_components": 2},
-            "predictive": {"features": ["x1", "x2"], "target": "y", "model_type": "forest"}
+            "predictive": {"features": ["x1", "x2"], "target": "y", "model_type": "xgboost"}
         }
         """
         results: Dict[str, Any] = {}
@@ -337,6 +569,8 @@ class DataAnalysisEngine:
             "time_series",
             "linear_regression",
             "random_forest",
+            "xgboost",
+            "xgboost_classification",
             "multivariate",
             "predictive",
         }
@@ -431,6 +665,54 @@ class DataAnalysisEngine:
                 max_depth=rf_cfg.get("max_depth"),
                 test_size=rf_cfg.get("test_size", 0.2),
                 random_state=rf_cfg.get("random_state", 42),
+            )
+
+        if plan.get("xgboost"):
+            xgb_cfg = plan["xgboost"]
+            logger.info(
+                "Running xgboost_regression features=%s target=%s estimators=%s lr=%s",
+                xgb_cfg["features"],
+                xgb_cfg["target"],
+                xgb_cfg.get("n_estimators", 100),
+                xgb_cfg.get("learning_rate", 0.1),
+            )
+            results["xgboost_regression"] = self.xgboost_regression(
+                df,
+                features=xgb_cfg["features"],
+                target=xgb_cfg["target"],
+                n_estimators=xgb_cfg.get("n_estimators", 100),
+                max_depth=xgb_cfg.get("max_depth", 6),
+                learning_rate=xgb_cfg.get("learning_rate", 0.1),
+                subsample=xgb_cfg.get("subsample", 0.8),
+                colsample_bytree=xgb_cfg.get("colsample_bytree", 0.8),
+                reg_alpha=xgb_cfg.get("reg_alpha", 0.0),
+                reg_lambda=xgb_cfg.get("reg_lambda", 1.0),
+                test_size=xgb_cfg.get("test_size", 0.2),
+                random_state=xgb_cfg.get("random_state", 42),
+            )
+
+        if plan.get("xgboost_classification"):
+            xgbc_cfg = plan["xgboost_classification"]
+            logger.info(
+                "Running xgboost_classification features=%s target=%s estimators=%s lr=%s",
+                xgbc_cfg["features"],
+                xgbc_cfg["target"],
+                xgbc_cfg.get("n_estimators", 100),
+                xgbc_cfg.get("learning_rate", 0.1),
+            )
+            results["xgboost_classification"] = self.xgboost_classification(
+                df,
+                features=xgbc_cfg["features"],
+                target=xgbc_cfg["target"],
+                n_estimators=xgbc_cfg.get("n_estimators", 100),
+                max_depth=xgbc_cfg.get("max_depth", 6),
+                learning_rate=xgbc_cfg.get("learning_rate", 0.1),
+                subsample=xgbc_cfg.get("subsample", 0.8),
+                colsample_bytree=xgbc_cfg.get("colsample_bytree", 0.8),
+                reg_alpha=xgbc_cfg.get("reg_alpha", 0.0),
+                reg_lambda=xgbc_cfg.get("reg_lambda", 1.0),
+                test_size=xgbc_cfg.get("test_size", 0.2),
+                random_state=xgbc_cfg.get("random_state", 42),
             )
 
         if plan.get("multivariate"):
