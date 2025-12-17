@@ -71,8 +71,10 @@ the following sections:
 | `time_series` | Dict with `time_column`, `target_column`, optional `freq` |
 | `linear_regression` | Dict with `features`, `target`, optional test split |
 | `random_forest` | Dict with `features`, `target`, optional tree params |
+| `xgboost` | Dict with `features`, `target`, and XGBoost hyperparameters |
+| `xgboost_classification` | Dict with `features`, `target` (categorical), and XGBoost params |
 | `multivariate` | Dict with `features`, `n_components` for PCA projections |
-| `predictive` | Dict describing a predictive run; `model_type` = `linear` \| `forest` |
+| `predictive` | Dict describing a predictive run; `model_type` = `linear` \| `forest` \| `xgboost` |
 
 Example plan:
 
@@ -97,6 +99,21 @@ analysis_plan = {
         "target": "population",
         "n_estimators": 300
     },
+    "xgboost": {
+        "features": ["total_corn_value"],
+        "target": "population",
+        "n_estimators": 100,
+        "max_depth": 6,
+        "learning_rate": 0.1,
+        "subsample": 0.8,
+        "colsample_bytree": 0.8
+    },
+    "xgboost_classification": {
+        "features": ["total_corn_value", "population"],
+        "target": "state_category",
+        "n_estimators": 100,
+        "max_depth": 4
+    },
     "multivariate": {
         "features": ["total_corn_value", "population"],
         "n_components": 2
@@ -104,7 +121,7 @@ analysis_plan = {
     "predictive": {
         "features": ["total_corn_value"],
         "target": "population",
-        "model_type": "forest"
+        "model_type": "xgboost"
     }
 }
 ```

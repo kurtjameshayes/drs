@@ -167,6 +167,56 @@ def test_multivariate_and_predictive(sample_df):
     assert predictive["model_type"] == "forest"
 
 
+def test_xgboost_regression(sample_df):
+    engine = DataAnalysisEngine()
+
+    xgb_result = engine.xgboost_regression(
+        sample_df,
+        features=["harvest"],
+        target="value",
+        n_estimators=50,
+        max_depth=3,
+        learning_rate=0.1,
+    )
+    assert "feature_importance" in xgb_result
+    assert "r2_score" in xgb_result
+    assert "rmse" in xgb_result
+    assert "model_params" in xgb_result
+    assert xgb_result["model_params"]["n_estimators"] == 50
+
+
+def test_xgboost_classification(sample_df):
+    engine = DataAnalysisEngine()
+
+    xgbc_result = engine.xgboost_classification(
+        sample_df,
+        features=["value", "population"],
+        target="category",
+        n_estimators=50,
+        max_depth=3,
+    )
+    assert "accuracy" in xgbc_result
+    assert "f1_score" in xgbc_result
+    assert "feature_importance" in xgbc_result
+    assert "class_labels" in xgbc_result
+    assert "num_classes" in xgbc_result
+    assert xgbc_result["num_classes"] == 2  # "A" and "B"
+
+
+def test_predictive_analysis_xgboost(sample_df):
+    engine = DataAnalysisEngine()
+
+    predictive = engine.predictive_analysis(
+        sample_df,
+        features=["harvest"],
+        target="value",
+        model_type="xgboost",
+        n_estimators=25,
+    )
+    assert predictive["model_type"] == "xgboost"
+    assert "feature_importance" in predictive
+
+
 def test_run_suite(sample_df):
     engine = DataAnalysisEngine()
     plan = {
@@ -181,3 +231,32 @@ def test_run_suite(sample_df):
 
     assert "basic_statistics" in results
     assert "linear_regression" in results
+
+
+def test_run_suite_with_xgboost(sample_df):
+    engine = DataAnalysisEngine()
+    plan = {
+        "xgboost": {
+            "features": ["harvest"],
+            "target": "value",
+            "n_estimators": 25,
+            "learning_rate": 0.1,
+        },
+        "xgboost_classification": {
+            "features": ["value", "population"],
+            "target": "category",
+            "n_estimators": 25,
+        },
+        "predictive": {
+            "features": ["harvest"],
+            "target": "value",
+            "model_type": "xgboost",
+            "n_estimators": 25,
+        },
+    }
+    results = engine.run_suite(sample_df, plan)
+
+    assert "xgboost_regression" in results
+    assert "xgboost_classification" in results
+    assert "predictive_analysis" in results
+    assert results["predictive_analysis"]["model_type"] == "xgboost"
