@@ -185,6 +185,37 @@ def test_xgboost_regression(sample_df):
     assert xgb_result["model_params"]["n_estimators"] == 50
 
 
+def test_xgboost_regression_graphing_data(sample_df):
+    """Test that XGBoost regression returns sufficient data for graphing predictions vs actuals."""
+    engine = DataAnalysisEngine()
+
+    result = engine.xgboost_regression(
+        sample_df,
+        features=["harvest"],
+        target="value",
+        n_estimators=50,
+    )
+
+    # Verify graphing_data is present
+    assert "graphing_data" in result
+    graphing_data = result["graphing_data"]
+
+    # Verify all required fields for graphing
+    assert "predictions" in graphing_data
+    assert "actuals" in graphing_data
+    assert "features" in graphing_data
+    assert "feature_names" in graphing_data
+    assert "n_samples" in graphing_data
+
+    # Verify data lengths match for pairing predictions with actuals
+    assert len(graphing_data["predictions"]) == len(graphing_data["actuals"])
+    assert len(graphing_data["features"]) == len(graphing_data["predictions"])
+    assert graphing_data["n_samples"] == len(graphing_data["predictions"])
+
+    # Verify feature names are correct
+    assert graphing_data["feature_names"] == ["harvest"]
+
+
 def test_xgboost_classification(sample_df):
     engine = DataAnalysisEngine()
 
@@ -201,6 +232,37 @@ def test_xgboost_classification(sample_df):
     assert "class_labels" in xgbc_result
     assert "num_classes" in xgbc_result
     assert xgbc_result["num_classes"] == 2  # "A" and "B"
+
+
+def test_xgboost_classification_graphing_data(sample_df):
+    """Test that XGBoost classification returns sufficient data for graphing predictions vs actuals."""
+    engine = DataAnalysisEngine()
+
+    result = engine.xgboost_classification(
+        sample_df,
+        features=["value", "population"],
+        target="category",
+        n_estimators=50,
+    )
+
+    # Verify graphing_data is present
+    assert "graphing_data" in result
+    graphing_data = result["graphing_data"]
+
+    # Verify all required fields for graphing
+    assert "predictions" in graphing_data
+    assert "actuals" in graphing_data
+    assert "features" in graphing_data
+    assert "feature_names" in graphing_data
+    assert "n_samples" in graphing_data
+
+    # Verify data lengths match for pairing predictions with actuals
+    assert len(graphing_data["predictions"]) == len(graphing_data["actuals"])
+    assert len(graphing_data["features"]) == len(graphing_data["predictions"])
+    assert graphing_data["n_samples"] == len(graphing_data["predictions"])
+
+    # Verify feature names are correct
+    assert graphing_data["feature_names"] == ["value", "population"]
 
 
 def test_predictive_analysis_xgboost(sample_df):
