@@ -1,0 +1,333 @@
+"""
+Testing Agent for the data source discovery workflow.
+
+This agent tests access to the data source using the documented
+methodology and verifies that the data matches expectations.
+"""
+
+import json
+import logging
+import time
+from typing import Dict, Any, Optional, Tuple
+
+from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import SystemMessage, HumanMessage
+
+from config import Config
+from ..state import (
+    DiscoveryState,
+    AccessDocumentation,
+    TestResults,
+    AccessMethod,
+    WorkflowError,
+)
+from ..prompts import TESTING_AGENT_SYSTEM, TESTING_AGENT_TASK
+from ..tools import make_http_request
+
+logger = logging.getLogger(__name__)
+
+
+class TestingAgent:
+    """
+    Agent 5: Test access to the data source.
+
+    Implements a test query using the documented methodology and
+    verifies that the response matches expectations.
+    """
+
+    def __init__(self):
+        self.llm = ChatAnthropic(
+            model=Config.DISCOVERY_LLM_MODEL,
+            api_key=Config.ANTHROPIC_API_KEY,
+            temperature=0.1,
+        )
+        self.max_retries = Config.DISCOVERY_TEST_RETRIES
+        self.backoff_factor = Config.DISCOVERY_TEST_BACKOFF
+
+    def _build_test_request(
+        self, access_doc: Dict[str, Any], user_description: str
+    ) -> Dict[str, Any]:
+        """Build a test request based on the documentation."""
+        endpoints = access_doc.get("endpoints", [])
+        auth = access_doc.get("authentication", {})
+        base_url = access_doc.get("base_url", "")
+
+        # Find a suitable endpoint for testing
+        test_endpoint = None
+        for ep in endpoints:
+            # Prefer GET endpoints with minimal required params
+            if ep.get("method", "GET").upper() == "GET":
+                if not test_endpoint or len(ep.get("required_params", [])) < len(test_endpoint.get("required_params", [])):
+                    test_endpoint = ep
+
+        if not test_endpoint and endpoints:
+            test_endpoint = endpoints[0]
+
+        if not test_endpoint:
+            # No endpoints defined, try the base URL
+            return {
+                "url": base_url,
+                "method": "GET",
+                "headers": {},
+                "params": {},
+            }
+
+        # Build headers
+        headers = {}
+        if auth.get("required"):
+            auth_type = auth.get("auth_type", "")
+            auth_header = auth.get("auth_header", "Authorization")
+            auth_format = auth.get("auth_format", "{key}")
+
+            if auth_type == "api_key":
+                # Placeholder for API key
+                headers[auth_header] = auth_format.replace("{key}", "PLACEHOLDER_API_KEY")
+            elif auth_type == "bearer":
+                headers[auth_header] = f"Bearer PLACEHOLDER_TOKEN"
+
+        # Build params - use example values if available
+        params = {}
+        ep_params = test_endpoint.get("parameters", {})
+        for param_name in test_endpoint.get("required_params", []):
+            if param_name in ep_params:
+                params[param_name] = ep_params[param_name]
+            else:
+                params[param_name] = "test"
+
+        return {
+            "url": test_endpoint.get("url", base_url),
+            "method": test_endpoint.get("method", "GET"),
+            "headers": headers,
+            "params": params,
+        }
+
+    def _execute_test(
+        self, request: Dict[str, Any]
+    ) -> Tuple[bool, Dict[str, Any]]:
+        """Execute the test request with retry logic."""
+        return make_http_request(
+            url=request["url"],
+            method=request["method"],
+            headers=request.get("headers"),
+            params=request.get("params"),
+            max_retries=self.max_retries,
+            backoff_factor=self.backoff_factor,
+        )
+
+    def _validate_response(
+        self, response_data: Dict[str, Any], user_description: str, access_doc: Dict[str, Any]
+    ) -> Tuple[bool, str]:
+        """Validate that the response contains relevant data."""
+        # Check for common error indicators
+        data = response_data.get("data", {})
+
+        if isinstance(data, dict):
+            # Check for error fields
+            if data.get("error") or data.get("errors"):
+                error_msg = data.get("error") or data.get("errors")
+                return False, f"API returned error: {error_msg}"
+
+        # Use LLM to validate data relevance
+        messages = [
+            SystemMessage(content="""You are a data validation specialist. Analyze the API response
+to determine if it contains data relevant to the user's needs.
+
+Return a JSON object:
+{
+    "is_relevant": true/false,
+    "confidence": 0.0-1.0,
+    "reasoning": "explanation"
+}"""),
+            HumanMessage(content=f"""User is looking for: {user_description}
+
+API Response (sample):
+{json.dumps(data, indent=2)[:2000]}
+
+Does this response contain or indicate access to relevant data?"""),
+        ]
+
+        try:
+            response = self.llm.invoke(messages)
+            content = response.content
+
+            start = content.find("{")
+            end = content.rfind("}") + 1
+            if start != -1 and end > start:
+                validation = json.loads(content[start:end])
+                is_relevant = validation.get("is_relevant", False)
+                reasoning = validation.get("reasoning", "")
+
+                return is_relevant, reasoning
+
+        except Exception as e:
+            logger.warning(f"Validation LLM call failed: {e}")
+
+        # Fallback: assume relevant if we got any data
+        return bool(data), "Could not determine relevance automatically"
+
+    def run(self, state: DiscoveryState) -> DiscoveryState:
+        """
+        Execute the testing agent.
+
+        Args:
+            state: Current workflow state
+
+        Returns:
+            Updated state with test results
+        """
+        logger.info("Testing Agent: Starting access test")
+
+        try:
+            access_doc = state.get("access_documentation")
+            user_description = state["user_description"]
+
+            if not access_doc:
+                state["error"] = WorkflowError(
+                    agent_name="TestingAgent",
+                    step="testing",
+                    issue="No access documentation available for testing",
+                    details="The documentation agent did not provide access documentation",
+                    recoverable=False,
+                ).to_dict()
+                state["interrupted"] = True
+                return state
+
+            # Build test request
+            request = self._build_test_request(access_doc, user_description)
+            logger.info(f"Testing Agent: Testing {request['method']} {request['url']}")
+
+            # Check if authentication is required but we don't have credentials
+            auth = access_doc.get("authentication", {})
+            if auth.get("required") and "PLACEHOLDER" in str(request.get("headers", {})):
+                logger.warning("Testing Agent: API requires authentication but no credentials provided")
+                # Still try the request - some APIs return useful info even without auth
+
+            # Execute test
+            success, response = self._execute_test(request)
+
+            if not success:
+                test_results = TestResults(
+                    success=False,
+                    error_message=response.get("error", "Unknown error"),
+                    attempts=response.get("attempts", 1),
+                )
+
+                state["test_results"] = test_results.to_dict()
+                state["test_passed"] = False
+                state["testing_completed"] = True
+
+                # Check if this might be an auth issue
+                if auth.get("required"):
+                    state["error"] = WorkflowError(
+                        agent_name="TestingAgent",
+                        step="testing",
+                        issue="Test failed - authentication may be required",
+                        details=f"Error: {response.get('error')}. API requires {auth.get('auth_type', 'authentication')}. Registration URL: {auth.get('registration_url', 'N/A')}",
+                        recoverable=True,
+                    ).to_dict()
+                else:
+                    state["error"] = WorkflowError(
+                        agent_name="TestingAgent",
+                        step="testing",
+                        issue="Test request failed",
+                        details=str(response.get("error", "Unknown error")),
+                        recoverable=False,
+                    ).to_dict()
+
+                state["interrupted"] = True
+                return state
+
+            # Check response status
+            status_code = response.get("status_code", 0)
+
+            if status_code >= 400:
+                # Handle auth errors specifically
+                if status_code in (401, 403):
+                    test_results = TestResults(
+                        success=False,
+                        status_code=status_code,
+                        response_time_ms=response.get("response_time_ms"),
+                        data_received=False,
+                        data_matches_description=False,
+                        error_message=f"Authentication required (HTTP {status_code})",
+                        attempts=response.get("attempts", 1),
+                    )
+
+                    state["test_results"] = test_results.to_dict()
+                    state["test_passed"] = False
+                    state["testing_completed"] = True
+
+                    # This is a recoverable error - auth just needs to be configured
+                    state["error"] = WorkflowError(
+                        agent_name="TestingAgent",
+                        step="testing",
+                        issue=f"Authentication required (HTTP {status_code})",
+                        details=f"The API requires authentication. Type: {auth.get('auth_type', 'unknown')}. Registration: {auth.get('registration_url', 'Check documentation')}",
+                        recoverable=True,
+                    ).to_dict()
+                    state["interrupted"] = True
+                    return state
+
+                test_results = TestResults(
+                    success=False,
+                    status_code=status_code,
+                    response_time_ms=response.get("response_time_ms"),
+                    error_message=f"HTTP error: {status_code}",
+                    attempts=response.get("attempts", 1),
+                )
+
+                state["test_results"] = test_results.to_dict()
+                state["test_passed"] = False
+                state["testing_completed"] = True
+                state["error"] = WorkflowError(
+                    agent_name="TestingAgent",
+                    step="testing",
+                    issue=f"API returned error status {status_code}",
+                    details=json.dumps(response.get("data", {}))[:500],
+                    recoverable=False,
+                ).to_dict()
+                state["interrupted"] = True
+                return state
+
+            # Validate the response data
+            is_relevant, validation_reason = self._validate_response(
+                response, user_description, access_doc
+            )
+
+            # Create sample data (truncated)
+            sample_data = response.get("data", {})
+            if isinstance(sample_data, dict):
+                sample_data = {k: v for k, v in list(sample_data.items())[:5]}
+            elif isinstance(sample_data, list):
+                sample_data = sample_data[:3]
+
+            test_results = TestResults(
+                success=True,
+                status_code=status_code,
+                response_time_ms=response.get("response_time_ms"),
+                data_received=True,
+                data_matches_description=is_relevant,
+                sample_data=sample_data,
+                error_message="" if is_relevant else validation_reason,
+                attempts=response.get("attempts", 1),
+            )
+
+            state["test_results"] = test_results.to_dict()
+            state["test_passed"] = True
+            state["testing_completed"] = True
+
+            logger.info(f"Testing Agent: Test passed. Status: {status_code}, Time: {response.get('response_time_ms')}ms")
+
+            return state
+
+        except Exception as e:
+            logger.error(f"Testing Agent failed: {e}", exc_info=True)
+            state["error"] = WorkflowError(
+                agent_name="TestingAgent",
+                step="testing",
+                issue="Testing agent encountered an error",
+                details=str(e),
+                recoverable=False,
+            ).to_dict()
+            state["interrupted"] = True
+            return state
