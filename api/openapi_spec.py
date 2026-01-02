@@ -24,7 +24,8 @@ OPENAPI_SPEC = {
         {"name": "Queries", "description": "Query execution"},
         {"name": "Analysis", "description": "Data analysis operations"},
         {"name": "Cache", "description": "Cache management"},
-        {"name": "Stored Queries", "description": "Stored query management"}
+        {"name": "Stored Queries", "description": "Stored query management"},
+        {"name": "Discovery", "description": "AI-powered data source discovery"}
     ],
     "paths": {
         "/api/v1/health": {
@@ -694,6 +695,159 @@ OPENAPI_SPEC = {
                 ],
                 "responses": {
                     "200": {"description": "Search completed successfully"}
+                }
+            }
+        },
+        "/api/v1/discovery": {
+            "post": {
+                "tags": ["Discovery"],
+                "summary": "Discover and configure a new data source using AI-powered search",
+                "description": "Uses a LangGraph workflow with 6 agents to search for, evaluate, and configure data sources based on natural language descriptions. Requires ANTHROPIC_API_KEY and TAVILY_API_KEY.",
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "required": ["description"],
+                                "properties": {
+                                    "description": {
+                                        "type": "string",
+                                        "description": "Natural language description of the desired data source",
+                                        "example": "US agricultural commodity prices and production statistics"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Discovery completed successfully",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "success": {"type": "boolean"},
+                                        "source_id": {"type": "string", "description": "ID of the newly configured source"},
+                                        "config_id": {"type": "string", "description": "MongoDB ID of the configuration"},
+                                        "state": {"type": "object", "description": "Full workflow state"}
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request or discovery failed",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "success": {"type": "boolean"},
+                                        "error": {
+                                            "type": "object",
+                                            "properties": {
+                                                "agent_name": {"type": "string"},
+                                                "step": {"type": "string"},
+                                                "issue": {"type": "string"},
+                                                "details": {"type": "string"}
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "500": {"description": "Server error"}
+                }
+            }
+        },
+        "/api/v1/discovery/status": {
+            "get": {
+                "tags": ["Discovery"],
+                "summary": "Get the status and configuration of the discovery module",
+                "description": "Check if the discovery module is available and view its configuration settings.",
+                "responses": {
+                    "200": {
+                        "description": "Discovery module status",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "success": {"type": "boolean"},
+                                        "available": {"type": "boolean", "description": "Whether discovery module is available"},
+                                        "config": {
+                                            "type": "object",
+                                            "properties": {
+                                                "llm_model": {"type": "string"},
+                                                "max_search_results": {"type": "integer"},
+                                                "test_retries": {"type": "integer"},
+                                                "request_timeout": {"type": "integer"}
+                                            }
+                                        },
+                                        "missing_keys": {
+                                            "type": "array",
+                                            "items": {"type": "string"},
+                                            "description": "List of missing API keys"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "500": {"description": "Server error"}
+                }
+            }
+        },
+        "/api/v1/discovery/validate": {
+            "post": {
+                "tags": ["Discovery"],
+                "summary": "Validate a data source description before running discovery",
+                "description": "Check if a description is suitable for discovery and get suggestions for improvement.",
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "required": ["description"],
+                                "properties": {
+                                    "description": {
+                                        "type": "string",
+                                        "description": "Natural language description to validate",
+                                        "example": "Weather data for US cities"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Validation result",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "success": {"type": "boolean"},
+                                        "valid": {"type": "boolean"},
+                                        "description": {"type": "string"},
+                                        "length": {"type": "integer"},
+                                        "suggestions": {
+                                            "type": "array",
+                                            "items": {"type": "string"}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {"description": "Invalid request"},
+                    "500": {"description": "Server error"}
                 }
             }
         }

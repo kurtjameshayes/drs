@@ -2,10 +2,11 @@
 
 ## Project Statistics
 
-- **Total Python Files**: 21
-- **Total Lines of Code**: 2,031
-- **Connectors**: 3 (USDA NASS, Census.gov, Local File)
-- **API Endpoints**: 11
+- **Total Python Files**: 27
+- **Total Lines of Code**: 3,500+
+- **Connectors**: 4 (USDA NASS, Census.gov, FBI Crime, Local File)
+- **API Endpoints**: 33 (including 3 discovery endpoints)
+- **Discovery Agents**: 6
 
 ## Complete File Structure
 
@@ -24,7 +25,21 @@ data_retrieval_system/
 │   ├── base_connector.py             # Abstract base connector (127 lines)
 │   ├── connector_manager.py          # Connector lifecycle (158 lines)
 │   ├── query_engine.py               # Query orchestration (195 lines)
-│   └── cache_manager.py              # Caching layer (86 lines)
+│   ├── cache_manager.py              # Caching layer (86 lines)
+│   ├── data_analysis.py              # Analysis engine with 10+ methods
+│   └── discovery/                    # AI-powered data source discovery
+│       ├── __init__.py               # Module exports
+│       ├── workflow.py               # LangGraph workflow orchestration
+│       ├── state.py                  # State definitions and TypedDicts
+│       ├── prompts.py                # Agent prompts for LLMs
+│       ├── tools.py                  # Shared tools (web search, HTTP)
+│       └── agents/                   # Individual agent implementations
+│           ├── search_agent.py       # Finds potential data sources
+│           ├── examination_agent.py  # Evaluates access methods
+│           ├── selection_agent.py    # Selects best source
+│           ├── documentation_agent.py # Extracts technical docs
+│           ├── testing_agent.py      # Tests data source access
+│           └── configuration_agent.py # Stores config in MongoDB
 │
 ├── connectors/                        # Data source connectors
 │   ├── __init__.py
@@ -92,6 +107,19 @@ data_retrieval_system/
 - `QueryEngine.analyze_queries` orchestrates DataFrame creation plus configurable analysis plans
 - `core/data_analysis.py` provides linear & random-forest regression, descriptive stats, inferential and time-series tooling, PCA, and predictive helpers
 
+✅ **AI-Powered Data Source Discovery**
+- LangGraph-based workflow with 6 specialized agents
+- Natural language description to configured data source
+- Web search using Tavily API and data registries (data.gov, APIs.guru)
+- Automatic access method evaluation (API, web service, download)
+- Built-in testing with retry logic and exponential backoff
+- Automatic configuration storage in MongoDB
+
+**Discovery API Endpoints:**
+- `POST /api/v1/discovery` - Discover and configure a new data source
+- `GET /api/v1/discovery/status` - Get discovery module status
+- `POST /api/v1/discovery/validate` - Validate a discovery description
+
 ## Quick Start Commands
 
 ```bash
@@ -151,10 +179,27 @@ curl -X POST http://localhost:5000/api/v1/query/multi \
   }'
 ```
 
+### Data Source Discovery
+```bash
+# Check if discovery is available
+curl http://localhost:5000/api/v1/discovery/status
+
+# Validate a description before discovery
+curl -X POST http://localhost:5000/api/v1/discovery/validate \
+  -H "Content-Type: application/json" \
+  -d '{"description": "US weather data from NOAA"}'
+
+# Discover and configure a new data source
+curl -X POST http://localhost:5000/api/v1/discovery \
+  -H "Content-Type: application/json" \
+  -d '{"description": "US agricultural commodity prices and production statistics"}'
+```
+
 ## Configuration
 
 Environment variables (.env):
 ```
+# Core Configuration
 MONGO_URI=mongodb://localhost:27017/
 DATABASE_NAME=data_retrieval_system
 CACHE_TTL=3600
@@ -162,10 +207,20 @@ API_HOST=0.0.0.0
 API_PORT=5000
 MAX_RETRIES=3
 RETRY_BACKOFF_FACTOR=2.0
+
+# Data Source Discovery (required for discovery endpoints)
+ANTHROPIC_API_KEY=your_anthropic_api_key
+TAVILY_API_KEY=your_tavily_api_key
+DISCOVERY_LLM_MODEL=claude-sonnet-4-20250514
+DISCOVERY_MAX_SEARCH_RESULTS=10
+DISCOVERY_TEST_RETRIES=3
+DISCOVERY_TEST_BACKOFF=2.0
+DISCOVERY_REQUEST_TIMEOUT=30
 ```
 
 ## Dependencies
 
+Core:
 - pymongo==4.6.1 (MongoDB driver)
 - flask==3.0.0 (Web framework)
 - requests==2.31.0 (HTTP client)
@@ -174,6 +229,11 @@ RETRY_BACKOFF_FACTOR=2.0
 - pydantic==2.5.3 (Data validation)
 - openpyxl==3.1.2 (Excel support)
 - jsonschema==4.20.0 (JSON validation)
+
+Discovery module:
+- langgraph (LangGraph workflow orchestration)
+- anthropic (Claude LLM integration)
+- tavily-python (Tavily web search API)
 
 ## Extension Guide
 

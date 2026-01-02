@@ -2240,6 +2240,298 @@ def search_stored_queries():
         return jsonify({"success": False, "error": str(e)}), 500
 
 # ============================================================================
+# Data Source Discovery Routes
+# ============================================================================
+
+@app.route('/api/v1/discovery', methods=['POST'])
+def discover_data_source():
+    """
+    Discover and configure a new data source using AI-powered search
+    ---
+    tags:
+      - Discovery
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - description
+          properties:
+            description:
+              type: string
+              example: US agricultural commodity prices and production statistics
+              description: Natural language description of the desired data source
+    responses:
+      200:
+        description: Discovery completed successfully
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            source_id:
+              type: string
+              description: ID of the newly configured source
+            config_id:
+              type: string
+              description: MongoDB ID of the configuration
+            state:
+              type: object
+              description: Full workflow state including discovered sources and documentation
+      400:
+        description: Invalid request or discovery failed
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            error:
+              type: object
+              properties:
+                agent_name:
+                  type: string
+                step:
+                  type: string
+                issue:
+                  type: string
+                details:
+                  type: string
+      500:
+        description: Server error
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            error:
+              type: string
+    """
+    try:
+        from core.discovery import discover_data_source as run_discovery
+
+        data = request.get_json()
+        if not data or "description" not in data:
+            return jsonify({
+                "success": False,
+                "error": "description field is required"
+            }), 400
+
+        description = data["description"]
+        if not description or len(description.strip()) < 10:
+            return jsonify({
+                "success": False,
+                "error": "description must be at least 10 characters"
+            }), 400
+
+        logger.info(f"Starting data source discovery for: {description[:100]}...")
+
+        result = run_discovery(description)
+
+        if result["success"]:
+            # Reload connectors to pick up the new source
+            connector_manager.load_connectors()
+
+            return jsonify({
+                "success": True,
+                "source_id": result["source_id"],
+                "config_id": result["config_id"],
+                "state": result["state"]
+            }), 200
+        else:
+            return jsonify({
+                "success": False,
+                "error": result.get("error", {"issue": "Unknown error"}),
+                "state": result.get("state")
+            }), 400
+
+    except ImportError as e:
+        logger.error(f"Discovery module not available: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": "Discovery module not available. Ensure ANTHROPIC_API_KEY and TAVILY_API_KEY are set."
+        }), 500
+    except Exception as e:
+        logger.error(f"Error in data source discovery: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/v1/discovery/status', methods=['GET'])
+def get_discovery_status():
+    """
+    Get the status and configuration of the discovery module
+    ---
+    tags:
+      - Discovery
+    responses:
+      200:
+        description: Discovery module status
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            available:
+              type: boolean
+              description: Whether discovery module is available
+            config:
+              type: object
+              properties:
+                llm_model:
+                  type: string
+                max_search_results:
+                  type: integer
+                test_retries:
+                  type: integer
+                request_timeout:
+                  type: integer
+            missing_keys:
+              type: array
+              items:
+                type: string
+              description: List of missing API keys
+      500:
+        description: Server error
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            error:
+              type: string
+    """
+    try:
+        from config import Config
+
+        missing_keys = []
+        if not getattr(Config, 'ANTHROPIC_API_KEY', None):
+            missing_keys.append("ANTHROPIC_API_KEY")
+        if not getattr(Config, 'TAVILY_API_KEY', None):
+            missing_keys.append("TAVILY_API_KEY")
+
+        available = len(missing_keys) == 0
+
+        config_info = {
+            "llm_model": getattr(Config, 'DISCOVERY_LLM_MODEL', 'claude-sonnet-4-20250514'),
+            "max_search_results": getattr(Config, 'DISCOVERY_MAX_SEARCH_RESULTS', 10),
+            "test_retries": getattr(Config, 'DISCOVERY_TEST_RETRIES', 3),
+            "request_timeout": getattr(Config, 'DISCOVERY_REQUEST_TIMEOUT', 30),
+        }
+
+        return jsonify({
+            "success": True,
+            "available": available,
+            "config": config_info,
+            "missing_keys": missing_keys
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Error getting discovery status: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/v1/discovery/validate', methods=['POST'])
+def validate_discovery_description():
+    """
+    Validate a data source description before running discovery
+    ---
+    tags:
+      - Discovery
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - description
+          properties:
+            description:
+              type: string
+              example: Weather data for US cities
+              description: Natural language description to validate
+    responses:
+      200:
+        description: Validation result
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            valid:
+              type: boolean
+            description:
+              type: string
+            length:
+              type: integer
+            suggestions:
+              type: array
+              items:
+                type: string
+      400:
+        description: Invalid request
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            error:
+              type: string
+      500:
+        description: Server error
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            error:
+              type: string
+    """
+    try:
+        data = request.get_json()
+        if not data or "description" not in data:
+            return jsonify({
+                "success": False,
+                "error": "description field is required"
+            }), 400
+
+        description = data["description"].strip()
+        suggestions = []
+        valid = True
+
+        # Check length
+        if len(description) < 10:
+            valid = False
+            suggestions.append("Description should be at least 10 characters long")
+
+        if len(description) < 20:
+            suggestions.append("Consider adding more detail about the type of data you need")
+
+        # Check for specificity
+        generic_terms = ["data", "information", "stuff", "things"]
+        words = description.lower().split()
+        if all(word in generic_terms for word in words if len(word) > 3):
+            suggestions.append("Be more specific about what kind of data you're looking for")
+
+        # Suggest including domain
+        domain_keywords = ["api", "database", "statistics", "records", "census", "weather", "financial", "government"]
+        if not any(kw in description.lower() for kw in domain_keywords):
+            suggestions.append("Consider specifying the domain or type of source (e.g., 'government API', 'statistics database')")
+
+        return jsonify({
+            "success": True,
+            "valid": valid,
+            "description": description,
+            "length": len(description),
+            "suggestions": suggestions
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Error validating discovery description: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# ============================================================================
 # Error Handlers
 # ============================================================================
 
