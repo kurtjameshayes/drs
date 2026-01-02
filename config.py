@@ -14,3 +14,12 @@ class Config:
     API_PORT = int(os.getenv("API_PORT", 5000))
     MAX_RETRIES = int(os.getenv("MAX_RETRIES", 3))
     RETRY_BACKOFF_FACTOR = float(os.getenv("RETRY_BACKOFF_FACTOR", 2.0))
+
+    # LangGraph Discovery Workflow Configuration
+    ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+    TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
+    DISCOVERY_LLM_MODEL = os.getenv("DISCOVERY_LLM_MODEL", "claude-sonnet-4-20250514")
+    DISCOVERY_MAX_SEARCH_RESULTS = int(os.getenv("DISCOVERY_MAX_SEARCH_RESULTS", 10))
+    DISCOVERY_TEST_RETRIES = int(os.getenv("DISCOVERY_TEST_RETRIES", 3))
+    DISCOVERY_TEST_BACKOFF = float(os.getenv("DISCOVERY_TEST_BACKOFF", 2.0))
+    DISCOVERY_REQUEST_TIMEOUT = int(os.getenv("DISCOVERY_REQUEST_TIMEOUT", 30))

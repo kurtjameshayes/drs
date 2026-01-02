@@ -1,0 +1,292 @@
+"""
+State definitions for the LangGraph data source discovery workflow.
+
+This module defines all the typed state structures used throughout the
+discovery workflow, including data classes for candidates, examined sources,
+documentation, test results, and errors.
+"""
+
+from typing import TypedDict, List, Optional, Dict, Any, Literal
+from dataclasses import dataclass, field, asdict
+from datetime import datetime
+from enum import Enum
+
+
+class AccessMethod(str, Enum):
+    """Enumeration of data source access methods."""
+    API = "api"
+    WEB_SERVICE = "web_service"
+    DOWNLOAD = "download"
+    UNKNOWN = "unknown"
+
+
+class ConnectorType(str, Enum):
+    """Known connector types that can be mapped to."""
+    USDA_NASS = "usda_nass"
+    CENSUS = "census"
+    FBI_CRIME = "fbi_crime"
+    LOCAL_FILE = "local_file"
+    DISCOVERED = "discovered"  # Fallback for unmapped sources
+
+
+@dataclass
+class DataSourceCandidate:
+    """
+    Represents a potential data source found during search.
+    """
+    name: str
+    url: str
+    description: str
+    source_type: str = ""  # e.g., "government", "commercial", "academic"
+    relevance_score: float = 0.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "DataSourceCandidate":
+        return cls(**data)
+
+
+@dataclass
+class ExaminedSource:
+    """
+    Represents a data source after examination, with access method details.
+    """
+    candidate: DataSourceCandidate
+    has_api: bool = False
+    has_web_service: bool = False
+    has_download: bool = False
+    provides_desired_data: bool = False
+    api_url: Optional[str] = None
+    documentation_url: Optional[str] = None
+    access_notes: str = ""
+    examination_timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+
+    @property
+    def best_access_method(self) -> AccessMethod:
+        """Determine the best available access method (priority: API > Web Service > Download)."""
+        if self.has_api:
+            return AccessMethod.API
+        elif self.has_web_service:
+            return AccessMethod.WEB_SERVICE
+        elif self.has_download:
+            return AccessMethod.DOWNLOAD
+        return AccessMethod.UNKNOWN
+
+    def to_dict(self) -> Dict[str, Any]:
+        result = asdict(self)
+        result["best_access_method"] = self.best_access_method.value
+        return result
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ExaminedSource":
+        # Handle nested candidate
+        if isinstance(data.get("candidate"), dict):
+            data["candidate"] = DataSourceCandidate.from_dict(data["candidate"])
+        # Remove computed field if present
+        data.pop("best_access_method", None)
+        return cls(**data)
+
+
+@dataclass
+class AuthenticationDetails:
+    """Authentication requirements for a data source."""
+    required: bool = False
+    auth_type: str = ""  # "api_key", "oauth", "basic", "none"
+    auth_header: str = ""  # e.g., "Authorization", "X-API-Key"
+    auth_format: str = ""  # e.g., "Bearer {token}", "{key}"
+    registration_url: Optional[str] = None
+    notes: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AuthenticationDetails":
+        return cls(**data)
+
+
+@dataclass
+class EndpointDetails:
+    """Details about an API endpoint."""
+    url: str
+    method: str = "GET"
+    parameters: Dict[str, Any] = field(default_factory=dict)
+    required_params: List[str] = field(default_factory=list)
+    optional_params: List[str] = field(default_factory=list)
+    response_format: str = "json"
+    example_request: str = ""
+    example_response: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "EndpointDetails":
+        return cls(**data)
+
+
+@dataclass
+class AccessDocumentation:
+    """
+    Complete documentation for accessing a data source.
+    """
+    source_name: str
+    base_url: str
+    access_method: AccessMethod
+    authentication: AuthenticationDetails
+    endpoints: List[EndpointDetails] = field(default_factory=list)
+    rate_limits: Dict[str, Any] = field(default_factory=dict)
+    data_format: str = "json"
+    update_frequency: str = ""
+    terms_of_use_url: Optional[str] = None
+    notes: str = ""
+    mapped_connector_type: ConnectorType = ConnectorType.DISCOVERED
+
+    def to_dict(self) -> Dict[str, Any]:
+        result = {
+            "source_name": self.source_name,
+            "base_url": self.base_url,
+            "access_method": self.access_method.value,
+            "authentication": self.authentication.to_dict(),
+            "endpoints": [e.to_dict() for e in self.endpoints],
+            "rate_limits": self.rate_limits,
+            "data_format": self.data_format,
+            "update_frequency": self.update_frequency,
+            "terms_of_use_url": self.terms_of_use_url,
+            "notes": self.notes,
+            "mapped_connector_type": self.mapped_connector_type.value,
+        }
+        return result
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AccessDocumentation":
+        data["access_method"] = AccessMethod(data.get("access_method", "unknown"))
+        data["authentication"] = AuthenticationDetails.from_dict(data.get("authentication", {}))
+        data["endpoints"] = [EndpointDetails.from_dict(e) for e in data.get("endpoints", [])]
+        data["mapped_connector_type"] = ConnectorType(data.get("mapped_connector_type", "discovered"))
+        return cls(**data)
+
+
+@dataclass
+class TestResults:
+    """
+    Results from testing access to a data source.
+    """
+    success: bool
+    status_code: Optional[int] = None
+    response_time_ms: Optional[float] = None
+    data_received: bool = False
+    data_matches_description: bool = False
+    sample_data: Optional[Dict[str, Any]] = None
+    error_message: str = ""
+    attempts: int = 1
+    test_timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "TestResults":
+        return cls(**data)
+
+
+@dataclass
+class WorkflowError:
+    """
+    Error information when the workflow is interrupted.
+    """
+    agent_name: str
+    step: str
+    issue: str
+    details: str = ""
+    timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    recoverable: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "WorkflowError":
+        return cls(**data)
+
+
+class DiscoveryState(TypedDict, total=False):
+    """
+    The main state object passed through the LangGraph workflow.
+
+    This TypedDict defines all possible state fields. Not all fields
+    are required at every step - they are populated as the workflow progresses.
+    """
+    # Input
+    user_description: str
+
+    # Search Agent outputs
+    search_results: List[Dict[str, Any]]  # List of DataSourceCandidate dicts
+    search_completed: bool
+
+    # Examination Agent outputs
+    examined_sources: List[Dict[str, Any]]  # List of ExaminedSource dicts
+    current_examination_index: int
+    examination_completed: bool
+
+    # Selection Agent outputs
+    selected_source: Optional[Dict[str, Any]]  # ExaminedSource dict
+    selection_completed: bool
+
+    # Documentation Agent outputs
+    access_documentation: Optional[Dict[str, Any]]  # AccessDocumentation dict
+    documentation_completed: bool
+
+    # Testing Agent outputs
+    test_results: Optional[Dict[str, Any]]  # TestResults dict
+    test_passed: bool
+    testing_completed: bool
+
+    # Configuration Agent outputs
+    config_id: Optional[str]
+    source_id: Optional[str]
+    configuration_completed: bool
+
+    # Error handling
+    error: Optional[Dict[str, Any]]  # WorkflowError dict
+    interrupted: bool
+
+    # Workflow metadata
+    workflow_start_time: str
+    workflow_end_time: Optional[str]
+
+
+def create_initial_state(user_description: str) -> DiscoveryState:
+    """
+    Create an initial state for the discovery workflow.
+
+    Args:
+        user_description: The user's description of the desired data source
+
+    Returns:
+        Initialized DiscoveryState
+    """
+    return DiscoveryState(
+        user_description=user_description,
+        search_results=[],
+        search_completed=False,
+        examined_sources=[],
+        current_examination_index=0,
+        examination_completed=False,
+        selected_source=None,
+        selection_completed=False,
+        access_documentation=None,
+        documentation_completed=False,
+        test_results=None,
+        test_passed=False,
+        testing_completed=False,
+        config_id=None,
+        source_id=None,
+        configuration_completed=False,
+        error=None,
+        interrupted=False,
+        workflow_start_time=datetime.utcnow().isoformat(),
+        workflow_end_time=None,
+    )
