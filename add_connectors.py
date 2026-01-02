@@ -37,26 +37,26 @@ CONNECTOR_CONFIGS = [
         "source_name": "USDA NASS QuickStats",
         "connector_type": "usda_nass",
         "url": "https://quickstats.nass.usda.gov/api",
-        "api_key": "3C820E9E-DF04-3474-A1F7-A31014391B71",  # API key configured
+        "api_key": Config.USDA_NASS_API_KEY,
         "format": "JSON",
         "max_retries": 3,
         "retry_delay": 1,
-        "active": True,  # Set to True once API key is added
+        "active": bool(Config.USDA_NASS_API_KEY),
         "description": "USDA National Agricultural Statistics Service QuickStats API",
         "documentation": "https://quickstats.nass.usda.gov/api",
         "notes": "Get API key from: https://quickstats.nass.usda.gov/api"
     },
-    
+
     # US Census Bureau API Connector
     {
         "source_id": "census_api",
         "source_name": "US Census Bureau API",
         "connector_type": "census",
         "url": "https://api.census.gov/data",
-        "api_key": "520d25bd9288bc2a6cec5806e715d8ffc29c6812",  # API key configured
+        "api_key": Config.CENSUS_API_KEY,
         "max_retries": 3,
         "retry_delay": 1,
-        "active": True,  # Set to True when ready to use
+        "active": bool(Config.CENSUS_API_KEY),
         "description": "US Census Bureau Data API - Access to demographic and economic data",
         "documentation": "https://www.census.gov/data/developers/guidance.html",
         "notes": "API key is optional but provides higher rate limits. Get key from: https://api.census.gov/data/key_signup.html",
@@ -119,9 +119,9 @@ CONNECTOR_CONFIGS = [
         "source_name": "FBI Crime Data Explorer",
         "connector_type": "fbi_crime",
         "url": "https://api.usa.gov/crime/fbi/sapi",
-        "api_key": "iSNiIUIPpFPIanf4l9DdCDPZZK7yppVF0tlviXy3",
+        "api_key": Config.FBI_CRIME_API_KEY,
         "format": "JSON",
-        "active": True,
+        "active": bool(Config.FBI_CRIME_API_KEY),
         "description": "FBI Crime Data Explorer API - National and state crime statistics",
         "documentation": "https://crime-data-explorer.fr.cloud.gov/pages/docApi",
         "notes": "Provides access to national and state-level crime statistics, agency data, and offense data"
