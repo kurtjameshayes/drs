@@ -1240,6 +1240,411 @@ def classification_analysis():
         logger.error(f"Error performing classification: {str(e)}")
         return jsonify({"success": False, "error": str(e)}), 500
 
+@app.route('/api/v1/analysis/exploratory', methods=['POST'])
+def exploratory_analysis():
+    """
+    Perform exploratory data analysis
+    ---
+    tags:
+      - Analysis
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - data
+          properties:
+            data:
+              type: array
+              items:
+                type: object
+              example:
+                - x: 1
+                  y: 2
+                  category: A
+                - x: 2
+                  y: 4
+                  category: B
+    responses:
+      200:
+        description: Exploratory analysis completed successfully
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            result:
+              type: object
+              properties:
+                data_types:
+                  type: object
+                sample_records:
+                  type: array
+                distribution:
+                  type: object
+                missing_percentage:
+                  type: object
+      400:
+        description: Invalid request
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            error:
+              type: string
+      500:
+        description: Error occurred
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            error:
+              type: string
+    """
+    try:
+        data = request.get_json()
+        if not data or "data" not in data:
+            return jsonify({"success": False, "error": "data array is required"}), 400
+
+        df = pd.DataFrame(data["data"])
+        result = query_engine.analysis_engine.exploratory_analysis(df)
+
+        return jsonify({"success": True, "result": result}), 200
+
+    except Exception as e:
+        logger.error(f"Error performing exploratory analysis: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/v1/analysis/multivariate', methods=['POST'])
+def multivariate_analysis():
+    """
+    Perform multivariate analysis (PCA)
+    ---
+    tags:
+      - Analysis
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - data
+            - features
+          properties:
+            data:
+              type: array
+              items:
+                type: object
+              example:
+                - x1: 1
+                  x2: 2
+                  x3: 3
+                - x1: 4
+                  x2: 5
+                  x3: 6
+            features:
+              type: array
+              items:
+                type: string
+              example: ["x1", "x2", "x3"]
+            n_components:
+              type: integer
+              example: 2
+              description: Number of principal components (default 2)
+    responses:
+      200:
+        description: Multivariate analysis completed successfully
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            result:
+              type: object
+              properties:
+                explained_variance_ratio:
+                  type: array
+                  items:
+                    type: number
+                components:
+                  type: array
+                projected_samples:
+                  type: array
+      400:
+        description: Invalid request
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            error:
+              type: string
+      500:
+        description: Error occurred
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            error:
+              type: string
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"success": False, "error": "Request body is required"}), 400
+
+        required_fields = ["data", "features"]
+        for field in required_fields:
+            if field not in data:
+                return jsonify({"success": False, "error": f"Missing required field: {field}"}), 400
+
+        df = pd.DataFrame(data["data"])
+        features = data["features"]
+        n_components = data.get("n_components", 2)
+
+        result = query_engine.analysis_engine.multivariate_analysis(
+            df=df,
+            features=features,
+            n_components=n_components
+        )
+
+        return jsonify({"success": True, "result": result}), 200
+
+    except Exception as e:
+        logger.error(f"Error performing multivariate analysis: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/v1/analysis/timeseries', methods=['POST'])
+def timeseries_analysis():
+    """
+    Perform time series analysis
+    ---
+    tags:
+      - Analysis
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - data
+            - time_column
+            - target_column
+          properties:
+            data:
+              type: array
+              items:
+                type: object
+              example:
+                - date: "2024-01-01"
+                  value: 100
+                - date: "2024-01-02"
+                  value: 105
+            time_column:
+              type: string
+              example: "date"
+            target_column:
+              type: string
+              example: "value"
+            freq:
+              type: string
+              example: "D"
+              description: Resampling frequency (D=daily, W=weekly, M=monthly, etc.)
+            rolling_window:
+              type: integer
+              example: 7
+              description: Window size for rolling mean calculation (default 7)
+    responses:
+      200:
+        description: Time series analysis completed successfully
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            result:
+              type: object
+              properties:
+                recent_values:
+                  type: object
+                rolling_mean:
+                  type: object
+                volatility:
+                  type: number
+                trend_slope:
+                  type: number
+      400:
+        description: Invalid request
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            error:
+              type: string
+      500:
+        description: Error occurred
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            error:
+              type: string
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"success": False, "error": "Request body is required"}), 400
+
+        required_fields = ["data", "time_column", "target_column"]
+        for field in required_fields:
+            if field not in data:
+                return jsonify({"success": False, "error": f"Missing required field: {field}"}), 400
+
+        df = pd.DataFrame(data["data"])
+        time_column = data["time_column"]
+        target_column = data["target_column"]
+        freq = data.get("freq")
+        rolling_window = data.get("rolling_window", 7)
+
+        result = query_engine.analysis_engine.time_series_analysis(
+            df=df,
+            time_column=time_column,
+            target_column=target_column,
+            freq=freq,
+            rolling_window=rolling_window
+        )
+
+        return jsonify({"success": True, "result": result}), 200
+
+    except Exception as e:
+        logger.error(f"Error performing time series analysis: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/v1/analysis/inferential', methods=['POST'])
+def inferential_analysis():
+    """
+    Perform inferential statistical analysis
+    ---
+    tags:
+      - Analysis
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          required:
+            - data
+            - comparisons
+          properties:
+            data:
+              type: array
+              items:
+                type: object
+              example:
+                - x: 1
+                  y: 2
+                - x: 2
+                  y: 4
+            comparisons:
+              type: array
+              items:
+                type: object
+                properties:
+                  x:
+                    type: string
+                  y:
+                    type: string
+                  test:
+                    type: string
+                    enum: [pearson, spearman, ttest]
+              example:
+                - x: "x"
+                  y: "y"
+                  test: "pearson"
+            alpha:
+              type: number
+              example: 0.05
+              description: Significance level (default 0.05)
+    responses:
+      200:
+        description: Inferential analysis completed successfully
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            result:
+              type: array
+              items:
+                type: object
+                properties:
+                  x:
+                    type: string
+                  y:
+                    type: string
+                  test:
+                    type: string
+                  statistic:
+                    type: number
+                  p_value:
+                    type: number
+                  significant:
+                    type: boolean
+      400:
+        description: Invalid request
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            error:
+              type: string
+      500:
+        description: Error occurred
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            error:
+              type: string
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"success": False, "error": "Request body is required"}), 400
+
+        required_fields = ["data", "comparisons"]
+        for field in required_fields:
+            if field not in data:
+                return jsonify({"success": False, "error": f"Missing required field: {field}"}), 400
+
+        df = pd.DataFrame(data["data"])
+        comparisons = data["comparisons"]
+        alpha = data.get("alpha", 0.05)
+
+        result = query_engine.analysis_engine.inferential_analysis(
+            df=df,
+            comparisons=comparisons,
+            alpha=alpha
+        )
+
+        return jsonify({"success": True, "result": result}), 200
+
+    except Exception as e:
+        logger.error(f"Error performing inferential analysis: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
 # ============================================================================
 # Cache Management Routes
 # ============================================================================

@@ -403,6 +403,119 @@ OPENAPI_SPEC = {
                 }
             }
         },
+        "/api/v1/analysis/exploratory": {
+            "post": {
+                "tags": ["Analysis"],
+                "summary": "Perform exploratory data analysis",
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "required": ["data"],
+                                "properties": {
+                                    "data": {
+                                        "type": "array",
+                                        "items": {"type": "object"}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {"description": "Exploratory analysis completed successfully"}
+                }
+            }
+        },
+        "/api/v1/analysis/multivariate": {
+            "post": {
+                "tags": ["Analysis"],
+                "summary": "Perform multivariate analysis (PCA)",
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "required": ["data", "features"],
+                                "properties": {
+                                    "data": {"type": "array"},
+                                    "features": {"type": "array", "items": {"type": "string"}},
+                                    "n_components": {"type": "integer", "default": 2}
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {"description": "Multivariate analysis completed successfully"}
+                }
+            }
+        },
+        "/api/v1/analysis/timeseries": {
+            "post": {
+                "tags": ["Analysis"],
+                "summary": "Perform time series analysis",
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "required": ["data", "time_column", "target_column"],
+                                "properties": {
+                                    "data": {"type": "array"},
+                                    "time_column": {"type": "string"},
+                                    "target_column": {"type": "string"},
+                                    "freq": {"type": "string"},
+                                    "rolling_window": {"type": "integer", "default": 7}
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {"description": "Time series analysis completed successfully"}
+                }
+            }
+        },
+        "/api/v1/analysis/inferential": {
+            "post": {
+                "tags": ["Analysis"],
+                "summary": "Perform inferential statistical analysis",
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "required": ["data", "comparisons"],
+                                "properties": {
+                                    "data": {"type": "array"},
+                                    "comparisons": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "x": {"type": "string"},
+                                                "y": {"type": "string"},
+                                                "test": {"type": "string", "enum": ["pearson", "spearman", "ttest"]}
+                                            }
+                                        }
+                                    },
+                                    "alpha": {"type": "number", "default": 0.05}
+                                }
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {"description": "Inferential analysis completed successfully"}
+                }
+            }
+        },
         "/api/v1/cache/stats": {
             "get": {
                 "tags": ["Cache"],
