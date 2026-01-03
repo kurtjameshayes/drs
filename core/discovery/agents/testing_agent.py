@@ -46,11 +46,19 @@ class TestingAgent:
 
     def _build_test_request(
         self, access_doc: Dict[str, Any], user_description: str
-    ) -> Dict[str, Any]:
-        """Build a test request based on the documentation."""
+    ) -> Tuple[Dict[str, Any], bool]:
+        """
+        Build a test request based on the documentation.
+
+        Returns:
+            Tuple of (request_dict, has_real_credentials)
+        """
         endpoints = access_doc.get("endpoints", [])
         auth = access_doc.get("authentication", {})
         base_url = access_doc.get("base_url", "")
+
+        # Check if we have a provided API key from human input
+        provided_api_key = access_doc.get("_provided_api_key")
 
         # Find a suitable endpoint for testing
         test_endpoint = None
@@ -70,20 +78,33 @@ class TestingAgent:
                 "method": "GET",
                 "headers": {},
                 "params": {},
-            }
+            }, False
 
         # Build headers
         headers = {}
+        has_real_credentials = False
         if auth.get("required"):
             auth_type = auth.get("auth_type", "")
             auth_header = auth.get("auth_header", "Authorization")
             auth_format = auth.get("auth_format", "{key}")
 
-            if auth_type == "api_key":
-                # Placeholder for API key
-                headers[auth_header] = auth_format.replace("{key}", "PLACEHOLDER_API_KEY")
-            elif auth_type == "bearer":
-                headers[auth_header] = f"Bearer PLACEHOLDER_TOKEN"
+            if provided_api_key:
+                # Use the provided API key
+                has_real_credentials = True
+                if auth_type == "bearer" or "bearer" in auth_format.lower():
+                    headers[auth_header] = f"Bearer {provided_api_key}"
+                elif auth_type == "api_key":
+                    headers[auth_header] = auth_format.replace("{key}", provided_api_key).replace("{token}", provided_api_key)
+                else:
+                    # Default: just use the key directly
+                    headers[auth_header] = provided_api_key
+                logger.info(f"Testing Agent: Using provided API key for authentication")
+            else:
+                # No API key provided, use placeholder
+                if auth_type == "api_key":
+                    headers[auth_header] = auth_format.replace("{key}", "PLACEHOLDER_API_KEY")
+                elif auth_type == "bearer":
+                    headers[auth_header] = f"Bearer PLACEHOLDER_TOKEN"
 
         # Build params - use example values if available
         params = {}
@@ -99,7 +120,7 @@ class TestingAgent:
             "method": test_endpoint.get("method", "GET"),
             "headers": headers,
             "params": params,
-        }
+        }, has_real_credentials
 
     def _execute_test(
         self, request: Dict[str, Any]
@@ -193,12 +214,12 @@ Does this response contain or indicate access to relevant data?"""),
                 return state
 
             # Build test request
-            request = self._build_test_request(access_doc, user_description)
+            request, has_real_credentials = self._build_test_request(access_doc, user_description)
             logger.info(f"Testing Agent: Testing {request['method']} {request['url']}")
 
             # Check if authentication is required but we don't have credentials
             auth = access_doc.get("authentication", {})
-            if auth.get("required") and "PLACEHOLDER" in str(request.get("headers", {})):
+            if auth.get("required") and not has_real_credentials:
                 logger.warning("Testing Agent: API requires authentication but no credentials provided")
                 # Still try the request - some APIs return useful info even without auth
 
