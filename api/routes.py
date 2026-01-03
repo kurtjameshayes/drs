@@ -2335,13 +2335,27 @@ def discover_data_source():
 
             return jsonify({
                 "success": True,
+                "workflow_id": result.get("workflow_id"),
                 "source_id": result["source_id"],
                 "config_id": result["config_id"],
                 "state": result["state"]
             }), 200
+        elif result.get("paused"):
+            # Workflow is paused waiting for human input
+            return jsonify({
+                "success": False,
+                "paused": True,
+                "workflow_id": result.get("workflow_id"),
+                "current_step": result.get("current_step"),
+                "human_input_request": result.get("human_input_request"),
+                "error": result.get("error"),
+                "message": "Workflow paused - human input required. Use POST /api/v1/discovery/{workflow_id}/resume to provide input.",
+                "state": result.get("state")
+            }), 200
         else:
             return jsonify({
                 "success": False,
+                "workflow_id": result.get("workflow_id"),
                 "error": result.get("error", {"issue": "Unknown error"}),
                 "state": result.get("state")
             }), 400
@@ -2530,6 +2544,381 @@ def validate_discovery_description():
     except Exception as e:
         logger.error(f"Error validating discovery description: {str(e)}")
         return jsonify({"success": False, "error": str(e)}), 500
+
+# ============================================================================
+# Workflow Management Routes
+# ============================================================================
+
+@app.route('/api/v1/discovery/workflows', methods=['GET'])
+def list_workflows():
+    """
+    List recent discovery workflows
+    ---
+    tags:
+      - Discovery
+    parameters:
+      - name: status
+        in: query
+        type: string
+        required: false
+        description: Filter by status (pending, running, paused, completed, failed, cancelled)
+      - name: limit
+        in: query
+        type: integer
+        required: false
+        default: 20
+        description: Maximum number of workflows to return
+    responses:
+      200:
+        description: List of workflows
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            workflows:
+              type: array
+              items:
+                type: object
+            count:
+              type: integer
+      500:
+        description: Server error
+    """
+    try:
+        from core.discovery.workflow import DataSourceDiscoveryWorkflow
+        from models.workflow_state import WorkflowStatus
+
+        status_filter = request.args.get('status')
+        limit = int(request.args.get('limit', 20))
+
+        workflow = DataSourceDiscoveryWorkflow()
+
+        if status_filter:
+            try:
+                status = WorkflowStatus(status_filter)
+                workflows = workflow.workflow_state_model.get_recent_workflows(limit=limit, status=status)
+            except ValueError:
+                return jsonify({
+                    "success": False,
+                    "error": f"Invalid status: {status_filter}. Valid values: pending, running, paused, completed, failed, cancelled"
+                }), 400
+        else:
+            workflows = workflow.workflow_state_model.get_recent_workflows(limit=limit)
+
+        return jsonify({
+            "success": True,
+            "workflows": workflows,
+            "count": len(workflows)
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Error listing workflows: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/v1/discovery/workflows/paused', methods=['GET'])
+def list_paused_workflows():
+    """
+    List all workflows that are paused waiting for human input
+    ---
+    tags:
+      - Discovery
+    responses:
+      200:
+        description: List of paused workflows
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            workflows:
+              type: array
+              items:
+                type: object
+                properties:
+                  workflow_id:
+                    type: string
+                  user_description:
+                    type: string
+                  pause_reason:
+                    type: string
+                  pause_details:
+                    type: string
+                  human_input_required:
+                    type: object
+                  paused_at:
+                    type: string
+            count:
+              type: integer
+      500:
+        description: Server error
+    """
+    try:
+        from core.discovery.workflow import DataSourceDiscoveryWorkflow
+
+        workflow = DataSourceDiscoveryWorkflow()
+        paused = workflow.get_paused_workflows()
+
+        return jsonify({
+            "success": True,
+            "workflows": paused,
+            "count": len(paused)
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Error listing paused workflows: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/v1/discovery/<workflow_id>', methods=['GET'])
+def get_workflow_status(workflow_id):
+    """
+    Get the status of a specific discovery workflow
+    ---
+    tags:
+      - Discovery
+    parameters:
+      - name: workflow_id
+        in: path
+        type: string
+        required: true
+        description: Workflow identifier
+    responses:
+      200:
+        description: Workflow status
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            workflow:
+              type: object
+              properties:
+                workflow_id:
+                  type: string
+                status:
+                  type: string
+                current_step:
+                  type: string
+                steps_completed:
+                  type: array
+                  items:
+                    type: string
+                pause_reason:
+                  type: string
+                human_input_required:
+                  type: object
+                error:
+                  type: object
+                source_id:
+                  type: string
+                config_id:
+                  type: string
+      404:
+        description: Workflow not found
+      500:
+        description: Server error
+    """
+    try:
+        from core.discovery.workflow import DataSourceDiscoveryWorkflow
+
+        workflow = DataSourceDiscoveryWorkflow()
+        status = workflow.get_workflow_status(workflow_id)
+
+        if not status:
+            return jsonify({
+                "success": False,
+                "error": f"Workflow not found: {workflow_id}"
+            }), 404
+
+        return jsonify({
+            "success": True,
+            "workflow": status
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Error getting workflow status: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/v1/discovery/<workflow_id>/resume', methods=['POST'])
+def resume_workflow(workflow_id):
+    """
+    Resume a paused workflow with human input
+    ---
+    tags:
+      - Discovery
+    parameters:
+      - name: workflow_id
+        in: path
+        type: string
+        required: true
+        description: Workflow identifier
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          properties:
+            api_key:
+              type: string
+              description: API key for the data source (if required)
+            oauth_token:
+              type: string
+              description: OAuth token (if required)
+            confirmation:
+              type: boolean
+              description: Confirmation response (if required)
+          example:
+            api_key: "your-api-key-here"
+    responses:
+      200:
+        description: Workflow resumed and completed successfully
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            workflow_id:
+              type: string
+            source_id:
+              type: string
+            config_id:
+              type: string
+            paused:
+              type: boolean
+              description: True if workflow is paused again waiting for more input
+            human_input_request:
+              type: object
+              description: Details about required input if paused again
+      400:
+        description: Invalid request or workflow not paused
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            error:
+              type: object
+      404:
+        description: Workflow not found
+      500:
+        description: Server error
+    """
+    try:
+        from core.discovery.workflow import DataSourceDiscoveryWorkflow
+
+        data = request.get_json()
+        if not data:
+            return jsonify({
+                "success": False,
+                "error": "Request body is required with human input"
+            }), 400
+
+        workflow = DataSourceDiscoveryWorkflow()
+        result = workflow.resume(workflow_id, data)
+
+        if result.get("error", {}).get("issue") == "Workflow not found":
+            return jsonify(result), 404
+
+        if result.get("error", {}).get("issue") == "Workflow not paused":
+            return jsonify(result), 400
+
+        if result["success"]:
+            # Reload connectors to pick up the new source
+            connector_manager.load_connectors()
+
+            return jsonify({
+                "success": True,
+                "workflow_id": result["workflow_id"],
+                "source_id": result["source_id"],
+                "config_id": result["config_id"],
+                "paused": False
+            }), 200
+        elif result.get("paused"):
+            return jsonify({
+                "success": False,
+                "workflow_id": result["workflow_id"],
+                "paused": True,
+                "human_input_request": result.get("human_input_request"),
+                "error": result.get("error"),
+                "message": "Workflow still requires additional input"
+            }), 200
+        else:
+            return jsonify({
+                "success": False,
+                "workflow_id": result["workflow_id"],
+                "error": result.get("error"),
+                "paused": False
+            }), 400
+
+    except Exception as e:
+        logger.error(f"Error resuming workflow: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/v1/discovery/<workflow_id>/cancel', methods=['POST'])
+def cancel_workflow(workflow_id):
+    """
+    Cancel a running or paused workflow
+    ---
+    tags:
+      - Discovery
+    parameters:
+      - name: workflow_id
+        in: path
+        type: string
+        required: true
+        description: Workflow identifier
+    responses:
+      200:
+        description: Workflow cancelled successfully
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            workflow_id:
+              type: string
+            message:
+              type: string
+      404:
+        description: Workflow not found
+      500:
+        description: Server error
+    """
+    try:
+        from core.discovery.workflow import DataSourceDiscoveryWorkflow
+
+        workflow = DataSourceDiscoveryWorkflow()
+
+        # Check if workflow exists
+        status = workflow.get_workflow_status(workflow_id)
+        if not status:
+            return jsonify({
+                "success": False,
+                "error": f"Workflow not found: {workflow_id}"
+            }), 404
+
+        success = workflow.cancel_workflow(workflow_id)
+
+        if success:
+            return jsonify({
+                "success": True,
+                "workflow_id": workflow_id,
+                "message": "Workflow cancelled successfully"
+            }), 200
+        else:
+            return jsonify({
+                "success": False,
+                "error": "Failed to cancel workflow"
+            }), 400
+
+    except Exception as e:
+        logger.error(f"Error cancelling workflow: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
 
 # ============================================================================
 # Error Handlers

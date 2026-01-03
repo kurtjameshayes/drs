@@ -212,6 +212,43 @@ class WorkflowError:
         return cls(**data)
 
 
+class HumanInputType(str, Enum):
+    """Types of human input that may be required."""
+    API_KEY = "api_key"
+    OAUTH_TOKEN = "oauth_token"
+    USERNAME_PASSWORD = "username_password"
+    CONFIRMATION = "confirmation"
+    SELECTION = "selection"
+
+
+@dataclass
+class HumanInputRequest:
+    """
+    Request for human input when workflow is paused.
+    """
+    input_type: HumanInputType
+    field_name: str
+    description: str
+    required: bool = True
+    registration_url: Optional[str] = None
+    additional_info: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "input_type": self.input_type.value,
+            "field_name": self.field_name,
+            "description": self.description,
+            "required": self.required,
+            "registration_url": self.registration_url,
+            "additional_info": self.additional_info,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "HumanInputRequest":
+        data["input_type"] = HumanInputType(data.get("input_type", "api_key"))
+        return cls(**data)
+
+
 class DiscoveryState(TypedDict, total=False):
     """
     The main state object passed through the LangGraph workflow.
@@ -219,6 +256,9 @@ class DiscoveryState(TypedDict, total=False):
     This TypedDict defines all possible state fields. Not all fields
     are required at every step - they are populated as the workflow progresses.
     """
+    # Workflow tracking
+    workflow_id: str  # Unique ID for this workflow execution
+
     # Input
     user_description: str
 
@@ -253,22 +293,35 @@ class DiscoveryState(TypedDict, total=False):
     error: Optional[Dict[str, Any]]  # WorkflowError dict
     interrupted: bool
 
+    # Human-in-the-loop fields
+    waiting_for_human_input: bool
+    human_input_request: Optional[Dict[str, Any]]  # HumanInputRequest dict
+    human_input_received: Optional[Dict[str, Any]]  # Input provided by user
+
     # Workflow metadata
     workflow_start_time: str
     workflow_end_time: Optional[str]
+    current_step: str  # Track which step the workflow is on
 
 
-def create_initial_state(user_description: str) -> DiscoveryState:
+def create_initial_state(user_description: str, workflow_id: str = None) -> DiscoveryState:
     """
     Create an initial state for the discovery workflow.
 
     Args:
         user_description: The user's description of the desired data source
+        workflow_id: Optional workflow ID. If not provided, one will be generated.
 
     Returns:
         Initialized DiscoveryState
     """
+    import uuid
+
+    if workflow_id is None:
+        workflow_id = f"wf_{uuid.uuid4().hex[:12]}"
+
     return DiscoveryState(
+        workflow_id=workflow_id,
         user_description=user_description,
         search_results=[],
         search_completed=False,
@@ -287,6 +340,10 @@ def create_initial_state(user_description: str) -> DiscoveryState:
         configuration_completed=False,
         error=None,
         interrupted=False,
+        waiting_for_human_input=False,
+        human_input_request=None,
+        human_input_received=None,
         workflow_start_time=datetime.utcnow().isoformat(),
         workflow_end_time=None,
+        current_step="initialized",
     )

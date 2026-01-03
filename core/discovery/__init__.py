@@ -4,6 +4,11 @@ Data Source Discovery Module
 This module provides a LangGraph-based workflow for automatically discovering,
 evaluating, and configuring new data sources based on natural language descriptions.
 
+Features:
+- State persistence after each workflow step (to MongoDB)
+- Human-in-the-loop support (pause for API keys, resume later)
+- Full workflow tracking and status monitoring
+
 The workflow consists of 6 agents:
 1. Search Agent - Searches for potential data sources using Tavily and data registries
 2. Examination Agent - Evaluates access methods (API, web service, download) for each source
@@ -12,22 +17,39 @@ The workflow consists of 6 agents:
 5. Testing Agent - Tests the data source access with retry logic
 6. Configuration Agent - Stores the configuration in MongoDB
 
-Usage:
+Basic Usage:
     from core.discovery import discover_data_source
 
     result = discover_data_source("US agricultural commodity prices and production statistics")
 
     if result["success"]:
         print(f"Configured source: {result['source_id']}")
+    elif result.get("paused"):
+        # Workflow needs human input (e.g., API key)
+        print(f"Workflow paused: {result['human_input_request']}")
+        print(f"Resume with: workflow.resume('{result['workflow_id']}', {{'api_key': 'your-key'}})")
     else:
         print(f"Error: {result['error']['issue']}")
 
-Or use the workflow class directly for more control:
-
+Workflow Management:
     from core.discovery import DataSourceDiscoveryWorkflow
 
     workflow = DataSourceDiscoveryWorkflow()
+
+    # Start discovery
     result = workflow.run("Weather data for US cities")
+
+    # Check paused workflows
+    paused = workflow.get_paused_workflows()
+
+    # Resume with human input
+    result = workflow.resume("wf_abc123", {"api_key": "your-api-key"})
+
+    # Check workflow status
+    status = workflow.get_workflow_status("wf_abc123")
+
+    # Cancel a workflow
+    workflow.cancel_workflow("wf_abc123")
 
 Environment Variables:
     ANTHROPIC_API_KEY - Required for Claude LLM
@@ -51,6 +73,8 @@ from .state import (
     WorkflowError,
     AccessMethod,
     ConnectorType,
+    HumanInputType,
+    HumanInputRequest,
     create_initial_state,
 )
 
@@ -67,6 +91,9 @@ __all__ = [
     "EndpointDetails",
     "TestResults",
     "WorkflowError",
+    # Human-in-the-loop
+    "HumanInputType",
+    "HumanInputRequest",
     # Enums
     "AccessMethod",
     "ConnectorType",

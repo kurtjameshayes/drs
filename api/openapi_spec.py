@@ -850,6 +850,222 @@ OPENAPI_SPEC = {
                     "500": {"description": "Server error"}
                 }
             }
+        },
+        "/api/v1/discovery/workflows": {
+            "get": {
+                "tags": ["Discovery"],
+                "summary": "List recent discovery workflows",
+                "description": "Get a list of recent workflow executions with optional status filtering.",
+                "parameters": [
+                    {
+                        "name": "status",
+                        "in": "query",
+                        "required": False,
+                        "schema": {"type": "string", "enum": ["pending", "running", "paused", "completed", "failed", "cancelled"]},
+                        "description": "Filter by workflow status"
+                    },
+                    {
+                        "name": "limit",
+                        "in": "query",
+                        "required": False,
+                        "schema": {"type": "integer", "default": 20},
+                        "description": "Maximum number of workflows to return"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "List of workflows",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "success": {"type": "boolean"},
+                                        "workflows": {"type": "array", "items": {"type": "object"}},
+                                        "count": {"type": "integer"}
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "500": {"description": "Server error"}
+                }
+            }
+        },
+        "/api/v1/discovery/workflows/paused": {
+            "get": {
+                "tags": ["Discovery"],
+                "summary": "List workflows paused for human input",
+                "description": "Get all workflows that are waiting for human input such as API keys or confirmation.",
+                "responses": {
+                    "200": {
+                        "description": "List of paused workflows",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "success": {"type": "boolean"},
+                                        "workflows": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "workflow_id": {"type": "string"},
+                                                    "user_description": {"type": "string"},
+                                                    "pause_reason": {"type": "string"},
+                                                    "pause_details": {"type": "string"},
+                                                    "human_input_required": {"type": "object"},
+                                                    "paused_at": {"type": "string", "format": "date-time"}
+                                                }
+                                            }
+                                        },
+                                        "count": {"type": "integer"}
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "500": {"description": "Server error"}
+                }
+            }
+        },
+        "/api/v1/discovery/{workflow_id}": {
+            "get": {
+                "tags": ["Discovery"],
+                "summary": "Get workflow status",
+                "description": "Get the current status and details of a specific discovery workflow.",
+                "parameters": [
+                    {
+                        "name": "workflow_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string"},
+                        "description": "Workflow identifier"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Workflow status",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "success": {"type": "boolean"},
+                                        "workflow": {
+                                            "type": "object",
+                                            "properties": {
+                                                "workflow_id": {"type": "string"},
+                                                "status": {"type": "string"},
+                                                "current_step": {"type": "string"},
+                                                "steps_completed": {"type": "array", "items": {"type": "string"}},
+                                                "pause_reason": {"type": "string"},
+                                                "human_input_required": {"type": "object"},
+                                                "error": {"type": "object"},
+                                                "source_id": {"type": "string"},
+                                                "config_id": {"type": "string"}
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {"description": "Workflow not found"},
+                    "500": {"description": "Server error"}
+                }
+            }
+        },
+        "/api/v1/discovery/{workflow_id}/resume": {
+            "post": {
+                "tags": ["Discovery"],
+                "summary": "Resume a paused workflow with human input",
+                "description": "Provide the required input (e.g., API key) to resume a paused workflow.",
+                "parameters": [
+                    {
+                        "name": "workflow_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string"},
+                        "description": "Workflow identifier"
+                    }
+                ],
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "api_key": {"type": "string", "description": "API key for the data source"},
+                                    "oauth_token": {"type": "string", "description": "OAuth token"},
+                                    "confirmation": {"type": "boolean", "description": "Confirmation response"}
+                                }
+                            },
+                            "example": {"api_key": "your-api-key-here"}
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Workflow resumed",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "success": {"type": "boolean"},
+                                        "workflow_id": {"type": "string"},
+                                        "source_id": {"type": "string"},
+                                        "config_id": {"type": "string"},
+                                        "paused": {"type": "boolean", "description": "True if still paused for more input"},
+                                        "human_input_request": {"type": "object"}
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "400": {"description": "Invalid request or workflow not paused"},
+                    "404": {"description": "Workflow not found"},
+                    "500": {"description": "Server error"}
+                }
+            }
+        },
+        "/api/v1/discovery/{workflow_id}/cancel": {
+            "post": {
+                "tags": ["Discovery"],
+                "summary": "Cancel a workflow",
+                "description": "Cancel a running or paused workflow.",
+                "parameters": [
+                    {
+                        "name": "workflow_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string"},
+                        "description": "Workflow identifier"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Workflow cancelled",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "success": {"type": "boolean"},
+                                        "workflow_id": {"type": "string"},
+                                        "message": {"type": "string"}
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "404": {"description": "Workflow not found"},
+                    "500": {"description": "Server error"}
+                }
+            }
         }
     }
 }
