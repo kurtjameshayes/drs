@@ -219,6 +219,10 @@ class HumanInputType(str, Enum):
     USERNAME_PASSWORD = "username_password"
     CONFIRMATION = "confirmation"
     SELECTION = "selection"
+    SELECTION_CONFIRMATION = "selection_confirmation"
+    ERROR_GUIDANCE = "error_guidance"
+    MISSING_INFO = "missing_info"
+    GUIDANCE = "guidance"
 
 
 @dataclass
@@ -232,6 +236,12 @@ class HumanInputRequest:
     required: bool = True
     registration_url: Optional[str] = None
     additional_info: Dict[str, Any] = field(default_factory=dict)
+    # For selection confirmation
+    options: List[Dict[str, Any]] = field(default_factory=list)
+    recommended_option: Optional[int] = None  # Index of recommended option
+    # For error/guidance scenarios
+    error_context: Optional[str] = None
+    suggested_actions: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -241,11 +251,24 @@ class HumanInputRequest:
             "required": self.required,
             "registration_url": self.registration_url,
             "additional_info": self.additional_info,
+            "options": self.options,
+            "recommended_option": self.recommended_option,
+            "error_context": self.error_context,
+            "suggested_actions": self.suggested_actions,
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "HumanInputRequest":
         data["input_type"] = HumanInputType(data.get("input_type", "api_key"))
+        # Handle optional fields that might not be in old data
+        if "options" not in data:
+            data["options"] = []
+        if "recommended_option" not in data:
+            data["recommended_option"] = None
+        if "error_context" not in data:
+            data["error_context"] = None
+        if "suggested_actions" not in data:
+            data["suggested_actions"] = []
         return cls(**data)
 
 
@@ -297,6 +320,12 @@ class DiscoveryState(TypedDict, total=False):
     waiting_for_human_input: bool
     human_input_request: Optional[Dict[str, Any]]  # HumanInputRequest dict
     human_input_received: Optional[Dict[str, Any]]  # Input provided by user
+    pause_reason: Optional[str]  # PauseReason value for the current pause
+
+    # Selection confirmation fields
+    selection_options: Optional[List[Dict[str, Any]]]  # Available options for user selection
+    selection_confirmed: bool  # Whether user confirmed the selection
+    user_selected_index: Optional[int]  # User's selected option index (if different from recommended)
 
     # Workflow metadata
     workflow_start_time: str
@@ -343,6 +372,10 @@ def create_initial_state(user_description: str, workflow_id: str = None) -> Disc
         waiting_for_human_input=False,
         human_input_request=None,
         human_input_received=None,
+        pause_reason=None,
+        selection_options=None,
+        selection_confirmed=False,
+        user_selected_index=None,
         workflow_start_time=datetime.utcnow().isoformat(),
         workflow_end_time=None,
         current_step="initialized",

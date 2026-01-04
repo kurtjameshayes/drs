@@ -31,7 +31,12 @@ class PauseReason(str, Enum):
     NEEDS_AUTHENTICATION = "needs_authentication"
     NEEDS_CONFIRMATION = "needs_confirmation"
     NEEDS_SELECTION = "needs_selection"
+    NEEDS_SELECTION_CONFIRMATION = "needs_selection_confirmation"
+    NEEDS_GUIDANCE = "needs_guidance"
+    ERROR_RECOVERABLE = "error_recoverable"
+    ERROR_REQUIRES_INPUT = "error_requires_input"
     RATE_LIMITED = "rate_limited"
+    MISSING_INFORMATION = "missing_information"
     OTHER = "other"
 
 

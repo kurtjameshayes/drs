@@ -68,23 +68,26 @@ class DataSourceDiscoveryWorkflow:
         "configure",
     ]
 
-    def __init__(self, db_client: MongoClient = None):
+    def __init__(self, db_client: MongoClient = None, require_selection_confirmation: bool = True):
         """
         Initialize the workflow.
 
         Args:
             db_client: Optional MongoDB client for dependency injection
+            require_selection_confirmation: If True, pause for user confirmation
+                                            when multiple data sources are found
         """
         if db_client is None:
             db_client = MongoClient(Config.MONGO_URI)
 
         self.db_client = db_client
         self.workflow_state_model = WorkflowState(db_client)
+        self.require_selection_confirmation = require_selection_confirmation
 
         # Initialize agents
         self.search_agent = SearchAgent()
         self.examination_agent = ExaminationAgent()
-        self.selection_agent = SelectionAgent()
+        self.selection_agent = SelectionAgent(require_confirmation=require_selection_confirmation)
         self.documentation_agent = DocumentationAgent()
         self.testing_agent = TestingAgent()
         self.configuration_agent = ConfigurationAgent(db_client)
@@ -167,6 +170,73 @@ class DataSourceDiscoveryWorkflow:
             return "stop"
         return "continue"
 
+    def _determine_pause_reason(self, state: DiscoveryState) -> PauseReason:
+        """Determine the appropriate PauseReason from state."""
+        # Check if pause_reason is explicitly set in state
+        explicit_reason = state.get("pause_reason")
+        if explicit_reason:
+            try:
+                return PauseReason(explicit_reason)
+            except ValueError:
+                pass
+
+        # Infer from human_input_request
+        human_input_request = state.get("human_input_request", {})
+        input_type = human_input_request.get("input_type", "")
+
+        if input_type == "selection_confirmation":
+            return PauseReason.NEEDS_SELECTION_CONFIRMATION
+        elif input_type == "api_key":
+            return PauseReason.NEEDS_API_KEY
+        elif input_type in ("oauth_token", "username_password"):
+            return PauseReason.NEEDS_AUTHENTICATION
+        elif input_type == "confirmation":
+            return PauseReason.NEEDS_CONFIRMATION
+        elif input_type == "selection":
+            return PauseReason.NEEDS_SELECTION
+        elif input_type == "error_guidance":
+            return PauseReason.ERROR_RECOVERABLE
+        elif input_type == "missing_info":
+            return PauseReason.MISSING_INFORMATION
+        elif input_type == "guidance":
+            return PauseReason.NEEDS_GUIDANCE
+
+        # Fallback: check error for clues
+        error = state.get("error", {})
+        if error.get("issue", "").lower().find("oauth") >= 0:
+            return PauseReason.NEEDS_AUTHENTICATION
+        elif error.get("recoverable"):
+            return PauseReason.ERROR_RECOVERABLE
+
+        return PauseReason.OTHER
+
+    def _get_pause_details(self, state: DiscoveryState, pause_reason: PauseReason) -> str:
+        """Generate human-readable pause details."""
+        human_input_request = state.get("human_input_request", {})
+
+        if human_input_request.get("description"):
+            return human_input_request["description"]
+
+        error = state.get("error", {})
+        if error.get("issue"):
+            return error["issue"]
+
+        # Default messages based on pause reason
+        defaults = {
+            PauseReason.NEEDS_API_KEY: "API key required to access the data source",
+            PauseReason.NEEDS_AUTHENTICATION: "Authentication credentials required",
+            PauseReason.NEEDS_CONFIRMATION: "User confirmation required",
+            PauseReason.NEEDS_SELECTION: "User selection required",
+            PauseReason.NEEDS_SELECTION_CONFIRMATION: "Please confirm or modify the data source selection",
+            PauseReason.NEEDS_GUIDANCE: "User guidance required to proceed",
+            PauseReason.ERROR_RECOVERABLE: "A recoverable error occurred - user input may help",
+            PauseReason.ERROR_REQUIRES_INPUT: "An error occurred that requires user input to resolve",
+            PauseReason.RATE_LIMITED: "Rate limited - waiting before retry",
+            PauseReason.MISSING_INFORMATION: "Additional information required",
+            PauseReason.OTHER: "Human input required",
+        }
+        return defaults.get(pause_reason, "Human input required")
+
     def _persist_state(self, state: DiscoveryState, step_name: str) -> None:
         """Persist workflow state after a step completes."""
         workflow_id = state.get("workflow_id")
@@ -177,30 +247,32 @@ class DataSourceDiscoveryWorkflow:
 
         # Check if this is a pause for human input
         if state.get("waiting_for_human_input"):
-            error = state.get("error", {})
-            auth_info = state.get("access_documentation", {}).get("authentication", {})
+            pause_reason = self._determine_pause_reason(state)
+            pause_details = self._get_pause_details(state, pause_reason)
 
-            pause_reason = PauseReason.NEEDS_API_KEY
-            if error.get("issue", "").lower().find("oauth") >= 0:
-                pause_reason = PauseReason.NEEDS_AUTHENTICATION
-
-            human_input_required = {
-                "type": "api_key",
-                "field_name": "api_key",
-                "description": error.get("details", "API key required"),
-                "registration_url": auth_info.get("registration_url"),
-            }
+            # Use the human_input_request from state if available
+            human_input_required = state.get("human_input_request")
+            if not human_input_required:
+                # Fallback for legacy behavior (testing agent API key flow)
+                error = state.get("error", {})
+                auth_info = state.get("access_documentation", {}).get("authentication", {})
+                human_input_required = {
+                    "type": "api_key",
+                    "field_name": "api_key",
+                    "description": error.get("details", "API key required"),
+                    "registration_url": auth_info.get("registration_url"),
+                }
 
             self.workflow_state_model.pause_for_input(
                 workflow_id=workflow_id,
                 state=dict(state),
                 current_step=step_name,
                 pause_reason=pause_reason,
-                pause_details=error.get("issue", "Human input required"),
+                pause_details=pause_details,
                 human_input_required=human_input_required,
             )
-        elif state.get("interrupted"):
-            # Failed with error
+        elif state.get("interrupted") and not state.get("waiting_for_human_input"):
+            # Failed with non-recoverable error
             self.workflow_state_model.mark_failed(
                 workflow_id=workflow_id,
                 state=dict(state),
@@ -412,18 +484,153 @@ class DataSourceDiscoveryWorkflow:
                 "state": dict(initial_state),
             }
 
+    def _apply_human_input(self, state: Dict[str, Any], human_input: Dict[str, Any], pause_reason: str) -> Dict[str, Any]:
+        """
+        Apply human input to state based on the pause reason.
+
+        Args:
+            state: Current workflow state
+            human_input: User-provided input
+            pause_reason: Reason workflow was paused
+
+        Returns:
+            Updated state with human input applied
+        """
+        state["human_input_received"] = human_input
+        state["waiting_for_human_input"] = False
+        state["human_input_request"] = None
+        state["pause_reason"] = None
+
+        # Handle different input types
+        if pause_reason == PauseReason.NEEDS_API_KEY.value:
+            if "api_key" in human_input:
+                access_doc = state.get("access_documentation", {})
+                if access_doc:
+                    access_doc["_provided_api_key"] = human_input["api_key"]
+                    state["access_documentation"] = access_doc
+            state["interrupted"] = False
+            state["error"] = None
+
+        elif pause_reason == PauseReason.NEEDS_AUTHENTICATION.value:
+            # Handle OAuth or username/password
+            if "oauth_token" in human_input:
+                access_doc = state.get("access_documentation", {})
+                if access_doc:
+                    access_doc["_provided_oauth_token"] = human_input["oauth_token"]
+                    state["access_documentation"] = access_doc
+            elif "username" in human_input and "password" in human_input:
+                access_doc = state.get("access_documentation", {})
+                if access_doc:
+                    access_doc["_provided_username"] = human_input["username"]
+                    access_doc["_provided_password"] = human_input["password"]
+                    state["access_documentation"] = access_doc
+            state["interrupted"] = False
+            state["error"] = None
+
+        elif pause_reason == PauseReason.NEEDS_SELECTION_CONFIRMATION.value:
+            # User confirmed or selected a different option
+            if human_input.get("confirmed", True):
+                state["selection_confirmed"] = True
+                # Check if user selected a different option
+                if "selected_index" in human_input:
+                    state["user_selected_index"] = human_input["selected_index"]
+                else:
+                    state["user_selected_index"] = None  # Use recommended
+            state["interrupted"] = False
+            state["error"] = None
+
+        elif pause_reason == PauseReason.ERROR_RECOVERABLE.value:
+            # Handle error guidance
+            action = human_input.get("action", "retry")
+            if action == "retry":
+                state["interrupted"] = False
+                state["error"] = None
+            elif action == "cancel":
+                state["interrupted"] = True
+                # Keep the error
+            elif action == "skip":
+                state["interrupted"] = False
+                state["error"] = None
+                # Mark step as skipped - allow workflow to try next step
+
+        elif pause_reason in (PauseReason.NEEDS_CONFIRMATION.value, PauseReason.NEEDS_GUIDANCE.value):
+            # General confirmation or guidance
+            if human_input.get("confirmed", True):
+                state["interrupted"] = False
+                state["error"] = None
+            # Apply any additional data from human_input
+            for key, value in human_input.items():
+                if key not in ("confirmed", "action"):
+                    state[f"_user_provided_{key}"] = value
+
+        else:
+            # Default handling - clear error state and continue
+            state["interrupted"] = False
+            state["error"] = None
+
+        return state
+
+    def _run_remaining_steps(self, state: DiscoveryState, current_step: str) -> DiscoveryState:
+        """
+        Run workflow steps from current_step onwards.
+
+        Args:
+            state: Current workflow state
+            current_step: Step to resume from
+
+        Returns:
+            Updated state after running remaining steps
+        """
+        step_methods = {
+            "search": self._search_node,
+            "examine": self._examine_node,
+            "select": self._select_node,
+            "document": self._document_node,
+            "test": self._test_node,
+            "configure": self._configure_node,
+        }
+
+        # Find the index of current step
+        try:
+            start_index = self.STEP_ORDER.index(current_step)
+        except ValueError:
+            # Unknown step, start from beginning
+            start_index = 0
+
+        # Run from current step onwards
+        for i in range(start_index, len(self.STEP_ORDER)):
+            step_name = self.STEP_ORDER[i]
+            step_method = step_methods.get(step_name)
+
+            if not step_method:
+                continue
+
+            logger.info(f"Resume: Running step '{step_name}'")
+            state = step_method(state)
+
+            # Check if we need to stop
+            if state.get("waiting_for_human_input") or state.get("interrupted"):
+                logger.info(f"Resume: Stopping at step '{step_name}' - waiting_for_human_input={state.get('waiting_for_human_input')}, interrupted={state.get('interrupted')}")
+                break
+
+        return state
+
     def resume(self, workflow_id: str, human_input: Dict[str, Any]) -> Dict[str, Any]:
         """
         Resume a paused workflow with human input.
 
         Args:
             workflow_id: ID of the paused workflow
-            human_input: Input provided by the user (e.g., {"api_key": "abc123"})
+            human_input: Input provided by the user. Format depends on pause reason:
+                - For API key: {"api_key": "your-key"}
+                - For selection confirmation: {"confirmed": true} or {"confirmed": true, "selected_index": 1}
+                - For error guidance: {"action": "retry"} or {"action": "cancel"} or {"action": "skip"}
+                - For confirmation: {"confirmed": true}
 
         Returns:
             Same as run() - workflow result dictionary
         """
-        logger.info(f"Resuming workflow {workflow_id} with human input")
+        logger.info(f"Resuming workflow {workflow_id} with human input: {list(human_input.keys())}")
 
         # Get the saved workflow state
         workflow_doc = self.workflow_state_model.get_by_workflow_id(workflow_id)
@@ -443,66 +650,45 @@ class DataSourceDiscoveryWorkflow:
                 "paused": False,
             }
 
-        # Get the saved state
+        # Get the saved state and pause reason
         saved_state = workflow_doc["state"]
         current_step = workflow_doc["current_step"]
+        pause_reason = workflow_doc.get("pause_reason", PauseReason.OTHER.value)
 
-        # Mark as resumed
+        logger.info(f"Resuming from step: {current_step}, pause_reason: {pause_reason}")
+
+        # Mark as resumed in database
         self.workflow_state_model.resume_with_input(workflow_id, human_input)
 
-        # Apply the human input to the state
-        saved_state["human_input_received"] = human_input
-        saved_state["waiting_for_human_input"] = False
-        saved_state["human_input_request"] = None
-        saved_state["interrupted"] = False
-        saved_state["error"] = None
-
-        # If we have an API key, apply it to the access documentation
-        if "api_key" in human_input:
-            access_doc = saved_state.get("access_documentation", {})
-            if access_doc:
-                access_doc["_provided_api_key"] = human_input["api_key"]
-                saved_state["access_documentation"] = access_doc
-
-        # Determine where to resume from
-        # We need to re-run from the step that was paused
-        logger.info(f"Resuming from step: {current_step}")
-
         try:
-            # Create a new graph that starts from the paused step
+            # Apply the human input to the state
+            saved_state = self._apply_human_input(saved_state, human_input, pause_reason)
+
+            # Check if user requested cancellation
+            if human_input.get("action") == "cancel":
+                self.workflow_state_model.cancel(workflow_id)
+                return {
+                    "success": False,
+                    "workflow_id": workflow_id,
+                    "error": {"issue": "Workflow cancelled", "details": "User requested cancellation"},
+                    "paused": False,
+                    "cancelled": True,
+                }
+
+            # Create typed state object
             resume_state = DiscoveryState(**saved_state)
 
-            # Run the remaining steps manually based on current_step
-            step_index = self.STEP_ORDER.index(current_step) if current_step in self.STEP_ORDER else -1
+            # Run remaining steps from current step
+            resume_state = self._run_remaining_steps(resume_state, current_step)
 
-            # Re-run from the current step
-            if current_step == "test" or step_index < self.STEP_ORDER.index("test"):
-                # Re-run test with the API key
-                resume_state = self._test_node(resume_state)
-
-                if resume_state.get("waiting_for_human_input") or resume_state.get("interrupted"):
-                    return {
-                        "success": False,
-                        "workflow_id": workflow_id,
-                        "source_id": None,
-                        "config_id": None,
-                        "paused": resume_state.get("waiting_for_human_input", False),
-                        "human_input_request": resume_state.get("human_input_request"),
-                        "error": resume_state.get("error"),
-                        "state": dict(resume_state),
-                    }
-
-            # Continue with configuration if test passed
-            if not resume_state.get("interrupted") and not resume_state.get("waiting_for_human_input"):
-                resume_state = self._configure_node(resume_state)
-
-            # Prepare final result
+            # Prepare result
             result = {
                 "success": not resume_state.get("interrupted", False) and not resume_state.get("waiting_for_human_input", False),
                 "workflow_id": workflow_id,
                 "source_id": resume_state.get("source_id"),
                 "config_id": resume_state.get("config_id"),
                 "paused": resume_state.get("waiting_for_human_input", False),
+                "current_step": resume_state.get("current_step"),
                 "human_input_request": resume_state.get("human_input_request"),
                 "error": resume_state.get("error"),
                 "state": dict(resume_state),
@@ -510,6 +696,8 @@ class DataSourceDiscoveryWorkflow:
 
             if result["success"]:
                 logger.info(f"Resumed workflow {workflow_id} completed successfully. Source ID: {result['source_id']}")
+            elif result["paused"]:
+                logger.info(f"Resumed workflow {workflow_id} paused again at step: {result['current_step']}")
 
             return result
 
@@ -521,7 +709,7 @@ class DataSourceDiscoveryWorkflow:
                 step="resume",
                 issue="Workflow resume failed",
                 details=str(e),
-                recoverable=False,
+                recoverable=True,
             ).to_dict()
 
             self.workflow_state_model.mark_failed(
