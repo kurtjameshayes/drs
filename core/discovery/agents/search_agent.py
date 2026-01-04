@@ -3,17 +3,22 @@ Search Agent for the data source discovery workflow.
 
 This agent searches for potential data sources that match the user's description
 using both web search (Tavily) and known data source registries.
+
+Also checks for existing configured data sources in the database before
+running external searches.
 """
 
 import json
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import SystemMessage, HumanMessage
+from pymongo import MongoClient
 
 from config import Config
-from ..state import DiscoveryState, DataSourceCandidate, WorkflowError
+from models.connector_config import ConnectorConfig
+from ..state import DiscoveryState, DataSourceCandidate, WorkflowError, HumanInputRequest, HumanInputType
 from ..prompts import SEARCH_AGENT_SYSTEM, SEARCH_AGENT_TASK
 from ..tools import web_search, search_data_gov, search_apis_guru
 
@@ -26,15 +31,88 @@ class SearchAgent:
 
     Uses web search (Tavily) and data source registries (Data.gov, APIs.guru)
     to find potential data sources.
+
+    Also checks for existing configured data sources in the database first.
     """
 
-    def __init__(self):
+    # Known connector type keywords for matching
+    CONNECTOR_TYPE_KEYWORDS = {
+        "usda_nass": ["usda", "nass", "agricultural", "agriculture", "crop", "farm", "quickstats"],
+        "census": ["census", "population", "demographic", "american community survey", "acs"],
+        "fbi_crime": ["fbi", "crime", "criminal", "ucr", "uniform crime"],
+    }
+
+    def __init__(self, db_client: MongoClient = None):
         self.llm = ChatAnthropic(
             model=Config.DISCOVERY_LLM_MODEL,
             api_key=Config.ANTHROPIC_API_KEY,
             temperature=0.3,
         )
         self.max_results = Config.DISCOVERY_MAX_SEARCH_RESULTS
+
+        if db_client is None:
+            db_client = MongoClient(Config.MONGO_URI)
+        self.connector_config = ConnectorConfig(db_client)
+
+    def _find_existing_sources(self, user_description: str) -> List[Dict[str, Any]]:
+        """
+        Check if any existing configured sources match the user's description.
+
+        Args:
+            user_description: User's description of the desired data source
+
+        Returns:
+            List of matching connector configurations
+        """
+        description_lower = user_description.lower()
+        matching_sources = []
+
+        # Get all active connectors
+        all_connectors = self.connector_config.get_all(active_only=True)
+
+        for connector in all_connectors:
+            connector_type = connector.get("connector_type", "").lower()
+            source_name = connector.get("source_name", "").lower()
+
+            # Check if connector type has matching keywords
+            keywords = self.CONNECTOR_TYPE_KEYWORDS.get(connector_type, [])
+
+            # Check if any keyword is in the user's description
+            match_score = 0
+            for keyword in keywords:
+                if keyword in description_lower:
+                    match_score += 1
+
+            # Also check source name
+            if source_name:
+                for word in source_name.split():
+                    if len(word) > 3 and word in description_lower:
+                        match_score += 1
+
+            if match_score > 0:
+                connector["_match_score"] = match_score
+                matching_sources.append(connector)
+
+        # Sort by match score
+        matching_sources.sort(key=lambda x: x.get("_match_score", 0), reverse=True)
+
+        return matching_sources
+
+    def _format_existing_source_options(self, sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Format existing sources as selection options."""
+        options = []
+        for i, source in enumerate(sources):
+            options.append({
+                "index": i,
+                "source_id": source.get("source_id"),
+                "source_name": source.get("source_name", "Unknown"),
+                "connector_type": source.get("connector_type"),
+                "url": source.get("url", ""),
+                "description": source.get("discovery_metadata", {}).get("user_description", "")
+                              or source.get("notes", "No description available"),
+                "is_existing": True,
+            })
+        return options
 
     def _generate_search_queries(self, user_description: str) -> List[str]:
         """Generate optimized search queries from the user's description."""
@@ -166,6 +244,68 @@ Score each source by relevance to the user's needs.""")
 
         try:
             user_description = state["user_description"]
+
+            # Check if user already decided about existing sources
+            use_existing = state.get("use_existing_source")
+
+            if use_existing is True:
+                # User wants to use an existing source - skip search and complete
+                selected_source_id = state.get("selected_existing_source_id")
+                if selected_source_id:
+                    logger.info(f"Search Agent: User chose to use existing source: {selected_source_id}")
+                    # Store the existing source info in the state for later use
+                    existing_sources = state.get("existing_sources_found", [])
+                    for source in existing_sources:
+                        if source.get("source_id") == selected_source_id:
+                            state["_using_existing_source"] = source
+                            state["source_id"] = selected_source_id
+                            state["config_id"] = source.get("_id")
+                            break
+
+                    state["search_completed"] = True
+                    state["examination_completed"] = True
+                    state["selection_completed"] = True
+                    state["documentation_completed"] = True
+                    state["testing_completed"] = True
+                    state["configuration_completed"] = True
+                    return state
+
+            if use_existing is False:
+                # User explicitly wants a new source - continue with search
+                logger.info("Search Agent: User requested new source discovery, skipping existing source check")
+            else:
+                # First time - check for existing sources
+                existing_sources = self._find_existing_sources(user_description)
+
+                if existing_sources:
+                    logger.info(f"Search Agent: Found {len(existing_sources)} existing sources that may match")
+
+                    # Store the existing sources for later reference
+                    state["existing_sources_found"] = existing_sources
+
+                    # Format options for user
+                    options = self._format_existing_source_options(existing_sources)
+
+                    # Pause and ask user if they want to use an existing source
+                    state["waiting_for_human_input"] = True
+                    state["pause_reason"] = "existing_source_found"
+                    state["human_input_request"] = HumanInputRequest(
+                        input_type=HumanInputType.EXISTING_SOURCE_FOUND,
+                        field_name="use_existing_source",
+                        description=f"Found {len(existing_sources)} existing data source(s) that may match your request. "
+                                   f"Would you like to use one of these, or discover a new source?",
+                        required=True,
+                        options=options,
+                        recommended_option=0 if options else None,
+                        additional_info={
+                            "existing_source_count": len(existing_sources),
+                            "user_description": user_description,
+                        },
+                    ).to_dict()
+
+                    logger.info(f"Search Agent: Pausing to ask about existing sources")
+                    return state
+
             all_results = []
 
             # Generate search queries

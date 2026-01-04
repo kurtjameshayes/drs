@@ -310,7 +310,65 @@ Does this response contain or indicate access to relevant data?"""),
                     state["test_passed"] = False
                     state["testing_completed"] = True
 
-                    # This is a recoverable error - auth just needs to be configured
+                    # Check if we already had a provided API key that failed
+                    provided_api_key = access_doc.get("_provided_api_key")
+                    retry_count = state.get("_api_key_retry_count", 0)
+
+                    if provided_api_key:
+                        # API key was provided but still failed - key is likely invalid
+                        retry_count += 1
+                        state["_api_key_retry_count"] = retry_count
+
+                        if retry_count >= 2:
+                            # Too many failed attempts - mark as non-recoverable
+                            state["error"] = WorkflowError(
+                                agent_name="TestingAgent",
+                                step="testing",
+                                issue=f"API key authentication failed after {retry_count} attempts",
+                                details=f"The provided API key was rejected by the server (HTTP {status_code}). "
+                                       f"Please verify: 1) The API key is correct, 2) The key has not expired, "
+                                       f"3) The key has the required permissions. Registration: {registration_url or 'Check documentation'}",
+                                recoverable=False,
+                            ).to_dict()
+                            state["interrupted"] = True
+                            logger.warning(f"Testing Agent: API key failed {retry_count} times. Marking as non-recoverable.")
+                            return state
+
+                        # First retry - ask for API key again with better message
+                        state["error"] = WorkflowError(
+                            agent_name="TestingAgent",
+                            step="testing",
+                            issue=f"Provided API key was rejected (HTTP {status_code})",
+                            details=f"The API key you provided was not accepted. Please verify the key is correct and try again. "
+                                   f"Registration: {registration_url or 'Check documentation'}",
+                            recoverable=True,
+                        ).to_dict()
+                        state["interrupted"] = True
+
+                        # Clear the old invalid key
+                        access_doc["_provided_api_key"] = None
+                        state["access_documentation"] = access_doc
+
+                        state["waiting_for_human_input"] = True
+                        state["pause_reason"] = "needs_api_key"
+                        state["human_input_request"] = HumanInputRequest(
+                            input_type=HumanInputType.API_KEY,
+                            field_name="api_key",
+                            description=f"The API key provided was invalid. Please provide a valid API key for {source_name}",
+                            required=True,
+                            registration_url=registration_url,
+                            additional_info={
+                                "auth_type": auth_type,
+                                "auth_header": auth.get("auth_header"),
+                                "previous_key_failed": True,
+                                "retry_count": retry_count,
+                            },
+                        ).to_dict()
+
+                        logger.info(f"Testing Agent: Provided API key was rejected ({status_code}). Asking for new key (attempt {retry_count + 1}).")
+                        return state
+
+                    # No API key was provided yet - first time asking
                     state["error"] = WorkflowError(
                         agent_name="TestingAgent",
                         step="testing",

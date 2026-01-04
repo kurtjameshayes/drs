@@ -37,6 +37,7 @@ class PauseReason(str, Enum):
     ERROR_REQUIRES_INPUT = "error_requires_input"
     RATE_LIMITED = "rate_limited"
     MISSING_INFORMATION = "missing_information"
+    EXISTING_SOURCE_FOUND = "existing_source_found"
     OTHER = "other"
 
 
