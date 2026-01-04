@@ -85,7 +85,7 @@ class DataSourceDiscoveryWorkflow:
         self.require_selection_confirmation = require_selection_confirmation
 
         # Initialize agents
-        self.search_agent = SearchAgent()
+        self.search_agent = SearchAgent(db_client)
         self.examination_agent = ExaminationAgent()
         self.selection_agent = SelectionAgent(require_confirmation=require_selection_confirmation)
         self.documentation_agent = DocumentationAgent()
@@ -168,6 +168,9 @@ class DataSourceDiscoveryWorkflow:
             return "stop"
         if state.get("waiting_for_human_input", False):
             return "stop"
+        # If using an existing source, skip to end
+        if state.get("_using_existing_source"):
+            return "stop"
         return "continue"
 
     def _determine_pause_reason(self, state: DiscoveryState) -> PauseReason:
@@ -200,6 +203,8 @@ class DataSourceDiscoveryWorkflow:
             return PauseReason.MISSING_INFORMATION
         elif input_type == "guidance":
             return PauseReason.NEEDS_GUIDANCE
+        elif input_type == "existing_source_found":
+            return PauseReason.EXISTING_SOURCE_FOUND
 
         # Fallback: check error for clues
         error = state.get("error", {})
@@ -233,6 +238,7 @@ class DataSourceDiscoveryWorkflow:
             PauseReason.ERROR_REQUIRES_INPUT: "An error occurred that requires user input to resolve",
             PauseReason.RATE_LIMITED: "Rate limited - waiting before retry",
             PauseReason.MISSING_INFORMATION: "Additional information required",
+            PauseReason.EXISTING_SOURCE_FOUND: "Existing data source found - choose to use it or discover a new one",
             PauseReason.OTHER: "Human input required",
         }
         return defaults.get(pause_reason, "Human input required")
@@ -421,6 +427,33 @@ class DataSourceDiscoveryWorkflow:
             # Run the graph
             final_state = self.graph.invoke(initial_state)
 
+            # Check if using an existing source (immediate success)
+            if final_state.get("_using_existing_source"):
+                existing_source = final_state.get("_using_existing_source", {})
+                source_id = final_state.get("source_id") or existing_source.get("source_id")
+                config_id = final_state.get("config_id") or existing_source.get("_id")
+
+                # Mark as completed in database
+                self.workflow_state_model.mark_completed(
+                    workflow_id=workflow_id,
+                    state=dict(final_state),
+                    source_id=source_id,
+                    config_id=config_id,
+                )
+
+                logger.info(f"Workflow {workflow_id} completed using existing source: {source_id}")
+                return {
+                    "success": True,
+                    "workflow_id": workflow_id,
+                    "source_id": source_id,
+                    "config_id": config_id,
+                    "paused": False,
+                    "human_input_request": None,
+                    "error": None,
+                    "state": dict(final_state),
+                    "used_existing_source": True,
+                }
+
             # Check if paused for human input
             if final_state.get("waiting_for_human_input"):
                 logger.info(f"Workflow {workflow_id} paused for human input")
@@ -563,6 +596,21 @@ class DataSourceDiscoveryWorkflow:
                 if key not in ("confirmed", "action"):
                     state[f"_user_provided_{key}"] = value
 
+        elif pause_reason == PauseReason.EXISTING_SOURCE_FOUND.value:
+            # User choosing whether to use existing source or discover new
+            if human_input.get("use_existing", False):
+                # User wants to use an existing source
+                state["use_existing_source"] = True
+                selected_index = human_input.get("selected_index", 0)
+                existing_sources = state.get("existing_sources_found", [])
+                if existing_sources and 0 <= selected_index < len(existing_sources):
+                    state["selected_existing_source_id"] = existing_sources[selected_index].get("source_id")
+            else:
+                # User wants to discover a new source
+                state["use_existing_source"] = False
+            state["interrupted"] = False
+            state["error"] = None
+
         else:
             # Default handling - clear error state and continue
             state["interrupted"] = False
@@ -611,6 +659,11 @@ class DataSourceDiscoveryWorkflow:
             # Check if we need to stop
             if state.get("waiting_for_human_input") or state.get("interrupted"):
                 logger.info(f"Resume: Stopping at step '{step_name}' - waiting_for_human_input={state.get('waiting_for_human_input')}, interrupted={state.get('interrupted')}")
+                break
+
+            # Check if using existing source - skip remaining steps
+            if state.get("_using_existing_source"):
+                logger.info(f"Resume: Using existing source, skipping remaining steps")
                 break
 
         return state
@@ -680,6 +733,33 @@ class DataSourceDiscoveryWorkflow:
 
             # Run remaining steps from current step
             resume_state = self._run_remaining_steps(resume_state, current_step)
+
+            # Check if using an existing source (immediate success)
+            if resume_state.get("_using_existing_source"):
+                existing_source = resume_state.get("_using_existing_source", {})
+                source_id = resume_state.get("source_id") or existing_source.get("source_id")
+                config_id = resume_state.get("config_id") or existing_source.get("_id")
+
+                # Mark as completed in database
+                self.workflow_state_model.mark_completed(
+                    workflow_id=workflow_id,
+                    state=dict(resume_state),
+                    source_id=source_id,
+                    config_id=config_id,
+                )
+
+                logger.info(f"Resumed workflow {workflow_id} completed using existing source: {source_id}")
+                return {
+                    "success": True,
+                    "workflow_id": workflow_id,
+                    "source_id": source_id,
+                    "config_id": config_id,
+                    "paused": False,
+                    "human_input_request": None,
+                    "error": None,
+                    "state": dict(resume_state),
+                    "used_existing_source": True,
+                }
 
             # Prepare result
             result = {

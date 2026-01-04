@@ -223,6 +223,7 @@ class HumanInputType(str, Enum):
     ERROR_GUIDANCE = "error_guidance"
     MISSING_INFO = "missing_info"
     GUIDANCE = "guidance"
+    EXISTING_SOURCE_FOUND = "existing_source_found"
 
 
 @dataclass
@@ -327,6 +328,11 @@ class DiscoveryState(TypedDict, total=False):
     selection_confirmed: bool  # Whether user confirmed the selection
     user_selected_index: Optional[int]  # User's selected option index (if different from recommended)
 
+    # Existing source handling
+    existing_sources_found: Optional[List[Dict[str, Any]]]  # Existing configured sources that match
+    use_existing_source: Optional[bool]  # Whether to use an existing source
+    selected_existing_source_id: Optional[str]  # ID of the selected existing source
+
     # Workflow metadata
     workflow_start_time: str
     workflow_end_time: Optional[str]
@@ -376,6 +382,9 @@ def create_initial_state(user_description: str, workflow_id: str = None) -> Disc
         selection_options=None,
         selection_confirmed=False,
         user_selected_index=None,
+        existing_sources_found=None,
+        use_existing_source=None,
+        selected_existing_source_id=None,
         workflow_start_time=datetime.utcnow().isoformat(),
         workflow_end_time=None,
         current_step="initialized",
