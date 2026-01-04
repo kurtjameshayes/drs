@@ -20,6 +20,8 @@ from ..state import (
     TestResults,
     AccessMethod,
     WorkflowError,
+    HumanInputRequest,
+    HumanInputType,
 )
 from ..prompts import TESTING_AGENT_SYSTEM, TESTING_AGENT_TASK
 from ..tools import make_http_request
@@ -80,40 +82,66 @@ class TestingAgent:
                 "params": {},
             }, False
 
-        # Build headers
-        headers = {}
-        has_real_credentials = False
-        if auth.get("required"):
-            auth_type = auth.get("auth_type", "")
-            auth_header = auth.get("auth_header", "Authorization")
-            auth_format = auth.get("auth_format", "{key}")
-
-            if provided_api_key:
-                # Use the provided API key
-                has_real_credentials = True
-                if auth_type == "bearer" or "bearer" in auth_format.lower():
-                    headers[auth_header] = f"Bearer {provided_api_key}"
-                elif auth_type == "api_key":
-                    headers[auth_header] = auth_format.replace("{key}", provided_api_key).replace("{token}", provided_api_key)
-                else:
-                    # Default: just use the key directly
-                    headers[auth_header] = provided_api_key
-                logger.info(f"Testing Agent: Using provided API key for authentication")
-            else:
-                # No API key provided, use placeholder
-                if auth_type == "api_key":
-                    headers[auth_header] = auth_format.replace("{key}", "PLACEHOLDER_API_KEY")
-                elif auth_type == "bearer":
-                    headers[auth_header] = f"Bearer PLACEHOLDER_TOKEN"
-
         # Build params - use example values if available
         params = {}
         ep_params = test_endpoint.get("parameters", {})
         for param_name in test_endpoint.get("required_params", []):
+            # Skip the 'key' param for NASS API - we'll add it separately with actual key
+            if param_name.lower() == "key" and provided_api_key:
+                continue
             if param_name in ep_params:
                 params[param_name] = ep_params[param_name]
             else:
                 params[param_name] = "test"
+
+        # Build headers
+        headers = {}
+        has_real_credentials = False
+
+        if auth.get("required") and provided_api_key:
+            auth_type = auth.get("auth_type", "")
+            auth_header = auth.get("auth_header", "Authorization")
+            auth_format = auth.get("auth_format", "{key}")
+            auth_notes = auth.get("notes", "")
+
+            has_real_credentials = True
+
+            # Check if API key should be passed as query parameter
+            # Look for hints in notes or auth_header
+            is_query_param = (
+                "query parameter" in auth_notes.lower() or
+                "query param" in auth_notes.lower() or
+                auth_header.lower() in ("key", "api_key", "apikey") or
+                (auth_type == "api_key" and auth_header.lower() not in ("authorization", "x-api-key"))
+            )
+
+            if is_query_param:
+                # Add API key as query parameter
+                param_name = auth_header if auth_header else "key"
+                params[param_name] = provided_api_key
+                logger.info(f"Testing Agent: Using provided API key as query parameter '{param_name}'")
+            elif auth_type == "bearer" or "bearer" in auth_format.lower():
+                headers[auth_header] = f"Bearer {provided_api_key}"
+                logger.info(f"Testing Agent: Using provided API key as Bearer token in header")
+            elif auth_type == "api_key":
+                formatted_key = auth_format.replace("{key}", provided_api_key).replace("{token}", provided_api_key)
+                headers[auth_header] = formatted_key
+                logger.info(f"Testing Agent: Using provided API key in header '{auth_header}'")
+            else:
+                # Default: use the key directly in the header
+                headers[auth_header] = provided_api_key
+                logger.info(f"Testing Agent: Using provided API key in header '{auth_header}'")
+
+        elif auth.get("required"):
+            # No API key provided, use placeholder
+            auth_type = auth.get("auth_type", "")
+            auth_header = auth.get("auth_header", "Authorization")
+            auth_format = auth.get("auth_format", "{key}")
+
+            if auth_type == "api_key":
+                headers[auth_header] = auth_format.replace("{key}", "PLACEHOLDER_API_KEY")
+            elif auth_type == "bearer":
+                headers[auth_header] = f"Bearer PLACEHOLDER_TOKEN"
 
         return {
             "url": test_endpoint.get("url", base_url),
@@ -264,6 +292,10 @@ Does this response contain or indicate access to relevant data?"""),
             if status_code >= 400:
                 # Handle auth errors specifically
                 if status_code in (401, 403):
+                    source_name = access_doc.get("source_name", "the data source")
+                    auth_type = auth.get("auth_type", "unknown")
+                    registration_url = auth.get("registration_url")
+
                     test_results = TestResults(
                         success=False,
                         status_code=status_code,
@@ -283,10 +315,27 @@ Does this response contain or indicate access to relevant data?"""),
                         agent_name="TestingAgent",
                         step="testing",
                         issue=f"Authentication required (HTTP {status_code})",
-                        details=f"The API requires authentication. Type: {auth.get('auth_type', 'unknown')}. Registration: {auth.get('registration_url', 'Check documentation')}",
+                        details=f"The API requires authentication. Type: {auth_type}. Registration: {registration_url or 'Check documentation'}",
                         recoverable=True,
                     ).to_dict()
                     state["interrupted"] = True
+
+                    # Set up human input request for API key
+                    state["waiting_for_human_input"] = True
+                    state["pause_reason"] = "needs_api_key"
+                    state["human_input_request"] = HumanInputRequest(
+                        input_type=HumanInputType.API_KEY,
+                        field_name="api_key",
+                        description=f"API key required for {source_name}",
+                        required=True,
+                        registration_url=registration_url,
+                        additional_info={
+                            "auth_type": auth_type,
+                            "auth_header": auth.get("auth_header"),
+                        },
+                    ).to_dict()
+
+                    logger.info(f"Testing Agent: Auth failed ({status_code}). Requesting API key from user.")
                     return state
 
                 test_results = TestResults(
