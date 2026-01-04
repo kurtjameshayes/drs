@@ -58,6 +58,7 @@ class TestingAgent:
         endpoints = access_doc.get("endpoints", [])
         auth = access_doc.get("authentication", {})
         base_url = access_doc.get("base_url", "")
+        mapped_connector_type = access_doc.get("mapped_connector_type", "")
 
         # Check if we have a provided API key from human input
         provided_api_key = access_doc.get("_provided_api_key")
@@ -75,11 +76,41 @@ class TestingAgent:
 
         if not test_endpoint:
             # No endpoints defined, try the base URL
+            # Handle USDA NASS connector - requires /api_GET endpoint
+            test_url = base_url
+            test_params = {}
+
+            if mapped_connector_type == "usda_nass" or "quickstats.nass.usda.gov" in base_url:
+                if not test_url.endswith("/api_GET"):
+                    if test_url.endswith("/"):
+                        test_url = test_url + "api_GET"
+                    else:
+                        test_url = test_url + "/api_GET"
+                # Add minimal test parameters for NASS
+                test_params = {
+                    "commodity_desc": "CORN",
+                    "year": "2020",
+                    "state_alpha": "IA",
+                    "statisticcat_desc": "PRODUCTION",
+                }
+                # Add API key if provided
+                if provided_api_key:
+                    test_params["key"] = provided_api_key
+                    logger.info(f"Testing Agent: Using NASS-specific endpoint (no endpoints defined): {test_url}")
+                    return {
+                        "url": test_url,
+                        "method": "GET",
+                        "headers": {},
+                        "params": test_params,
+                    }, True
+
+                logger.info(f"Testing Agent: Using NASS-specific endpoint (no endpoints defined): {test_url}")
+
             return {
-                "url": base_url,
+                "url": test_url,
                 "method": "GET",
                 "headers": {},
-                "params": {},
+                "params": test_params,
             }, False
 
         # Build params - use example values if available
@@ -143,9 +174,34 @@ class TestingAgent:
             elif auth_type == "bearer":
                 headers[auth_header] = f"Bearer PLACEHOLDER_TOKEN"
 
+        # Determine the test URL
+        test_url = test_endpoint.get("url", base_url) if test_endpoint else base_url
+
+        # Handle USDA NASS connector - requires /api_GET endpoint
+        if mapped_connector_type == "usda_nass" or "quickstats.nass.usda.gov" in base_url:
+            # Ensure we're using the correct endpoint
+            if not test_url.endswith("/api_GET"):
+                if test_url.endswith("/"):
+                    test_url = test_url + "api_GET"
+                else:
+                    test_url = test_url + "/api_GET"
+
+            # NASS requires at least some query parameters for a valid request
+            # Add minimal test parameters if not already present
+            if "commodity_desc" not in params:
+                params["commodity_desc"] = "CORN"
+            if "year" not in params:
+                params["year"] = "2020"
+            if "state_alpha" not in params:
+                params["state_alpha"] = "IA"
+            if "statisticcat_desc" not in params:
+                params["statisticcat_desc"] = "PRODUCTION"
+
+            logger.info(f"Testing Agent: Using NASS-specific endpoint: {test_url}")
+
         return {
-            "url": test_endpoint.get("url", base_url),
-            "method": test_endpoint.get("method", "GET"),
+            "url": test_url,
+            "method": test_endpoint.get("method", "GET") if test_endpoint else "GET",
             "headers": headers,
             "params": params,
         }, has_real_credentials
