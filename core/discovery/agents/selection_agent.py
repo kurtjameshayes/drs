@@ -18,6 +18,8 @@ from ..state import (
     ExaminedSource,
     AccessMethod,
     WorkflowError,
+    HumanInputRequest,
+    HumanInputType,
 )
 from ..prompts import SELECTION_AGENT_SYSTEM, SELECTION_AGENT_TASK
 
@@ -33,14 +35,26 @@ class SelectionAgent:
     2. Prefer API access over web service
     3. Prefer web service over downloads
     4. Among equal access methods, prefer official/government sources
+
+    Features:
+    - Can pause for user confirmation when multiple viable sources are found
+    - Allows user to override automatic selection
     """
 
-    def __init__(self):
+    def __init__(self, require_confirmation: bool = True):
+        """
+        Initialize the selection agent.
+
+        Args:
+            require_confirmation: If True, pause for user confirmation when
+                                  multiple options are available
+        """
         self.llm = ChatAnthropic(
             model=Config.DISCOVERY_LLM_MODEL,
             api_key=Config.ANTHROPIC_API_KEY,
             temperature=0.1,
         )
+        self.require_confirmation = require_confirmation
 
     def _filter_viable_sources(
         self, examined_sources: List[Dict[str, Any]]
@@ -96,6 +110,31 @@ class SelectionAgent:
         scored.sort(key=lambda x: x[1], reverse=True)
         return [source for source, score in scored]
 
+    def _create_selection_options(
+        self, ranked_sources: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Create user-friendly selection options from ranked sources.
+
+        Returns a list of option dictionaries with summary info for display.
+        """
+        options = []
+        for i, source in enumerate(ranked_sources):
+            candidate = source.get("candidate", {})
+            option = {
+                "index": i,
+                "name": candidate.get("name", "Unknown Source"),
+                "url": candidate.get("url", ""),
+                "description": candidate.get("description", "")[:200],
+                "source_type": candidate.get("source_type", "unknown"),
+                "access_method": source.get("best_access_method", "unknown"),
+                "has_api": source.get("has_api", False),
+                "has_documentation": bool(source.get("documentation_url")),
+                "score": self._score_source(source),
+            }
+            options.append(option)
+        return options
+
     def _select_best(
         self, viable_sources: List[Dict[str, Any]], user_description: str
     ) -> Optional[Dict[str, Any]]:
@@ -150,7 +189,7 @@ class SelectionAgent:
             state: Current workflow state
 
         Returns:
-            Updated state with selected source
+            Updated state with selected source, or paused state waiting for confirmation
         """
         logger.info("Selection Agent: Starting source selection")
 
@@ -184,7 +223,59 @@ class SelectionAgent:
                 state["interrupted"] = True
                 return state
 
-            # Select the best source
+            # Rank all viable sources
+            ranked_sources = self._rank_sources(viable_sources)
+
+            # Check if user has already confirmed a selection (resuming from pause)
+            if state.get("selection_confirmed"):
+                user_index = state.get("user_selected_index")
+                if user_index is not None and 0 <= user_index < len(ranked_sources):
+                    selected = ranked_sources[user_index]
+                    logger.info(f"Selection Agent: Using user-selected source at index {user_index}")
+                else:
+                    # User confirmed the recommended option (index 0)
+                    selected = ranked_sources[0]
+                    logger.info("Selection Agent: User confirmed recommended source")
+
+                state["selected_source"] = selected
+                state["selection_completed"] = True
+                candidate = selected.get("candidate", {})
+                logger.info(f"Selection Agent: Selected '{candidate.get('name')}' ({selected.get('best_access_method', 'unknown')})")
+                return state
+
+            # If confirmation is required and we have multiple options
+            if self.require_confirmation and len(ranked_sources) > 1:
+                # Prepare selection options for user review
+                selection_options = self._create_selection_options(ranked_sources)
+                state["selection_options"] = selection_options
+
+                # Create the recommended selection (best scored)
+                recommended = ranked_sources[0]
+                recommended_name = recommended.get("candidate", {}).get("name", "Unknown")
+
+                # Create human input request for selection confirmation
+                state["waiting_for_human_input"] = True
+                state["pause_reason"] = "needs_selection_confirmation"
+                state["human_input_request"] = HumanInputRequest(
+                    input_type=HumanInputType.SELECTION_CONFIRMATION,
+                    field_name="selection_confirmation",
+                    description=f"Please confirm the data source selection. We found {len(ranked_sources)} viable sources. "
+                               f"The recommended source is '{recommended_name}' (option 0). "
+                               f"You can confirm this selection or choose a different source.",
+                    required=True,
+                    options=selection_options,
+                    recommended_option=0,
+                    additional_info={
+                        "total_sources_examined": len(examined_sources),
+                        "viable_sources_count": len(viable_sources),
+                        "user_description": user_description,
+                    },
+                ).to_dict()
+
+                logger.info(f"Selection Agent: Pausing for user confirmation. {len(selection_options)} options available.")
+                return state
+
+            # Single option or confirmation not required - select automatically
             selected = self._select_best(viable_sources, user_description)
 
             if not selected:
@@ -213,7 +304,24 @@ class SelectionAgent:
                 step="selection",
                 issue="Selection agent encountered an error",
                 details=str(e),
-                recoverable=False,
+                recoverable=True,  # Changed to recoverable so user can provide guidance
             ).to_dict()
             state["interrupted"] = True
+
+            # Allow user to provide guidance on errors
+            state["waiting_for_human_input"] = True
+            state["pause_reason"] = "error_recoverable"
+            state["human_input_request"] = HumanInputRequest(
+                input_type=HumanInputType.ERROR_GUIDANCE,
+                field_name="error_action",
+                description="The selection agent encountered an error. Please choose how to proceed.",
+                required=True,
+                error_context=str(e),
+                suggested_actions=[
+                    "retry",  # Retry the selection
+                    "skip",   # Skip to manual selection
+                    "cancel", # Cancel the workflow
+                ],
+            ).to_dict()
+
             return state

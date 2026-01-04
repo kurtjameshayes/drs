@@ -2263,6 +2263,10 @@ def discover_data_source():
               type: string
               example: US agricultural commodity prices and production statistics
               description: Natural language description of the desired data source
+            require_selection_confirmation:
+              type: boolean
+              default: true
+              description: If true, pause for user to confirm/modify source selection when multiple options are found
     responses:
       200:
         description: Discovery completed successfully
@@ -2309,7 +2313,7 @@ def discover_data_source():
               type: string
     """
     try:
-        from core.discovery import discover_data_source as run_discovery
+        from core.discovery.workflow import DataSourceDiscoveryWorkflow
 
         data = request.get_json()
         if not data or "description" not in data:
@@ -2325,9 +2329,13 @@ def discover_data_source():
                 "error": "description must be at least 10 characters"
             }), 400
 
-        logger.info(f"Starting data source discovery for: {description[:100]}...")
+        # Get optional configuration
+        require_selection_confirmation = data.get("require_selection_confirmation", True)
 
-        result = run_discovery(description)
+        logger.info(f"Starting data source discovery for: {description[:100]}... (selection_confirmation={require_selection_confirmation})")
+
+        workflow = DataSourceDiscoveryWorkflow(require_selection_confirmation=require_selection_confirmation)
+        result = workflow.run(description)
 
         if result["success"]:
             # Reload connectors to pick up the new source
@@ -2763,18 +2771,31 @@ def resume_workflow(workflow_id):
           properties:
             api_key:
               type: string
-              description: API key for the data source (if required)
+              description: API key for the data source (if paused for API key)
             oauth_token:
               type: string
-              description: OAuth token (if required)
-            confirmation:
+              description: OAuth token (if paused for OAuth)
+            username:
+              type: string
+              description: Username (if paused for username/password auth)
+            password:
+              type: string
+              description: Password (if paused for username/password auth)
+            confirmed:
               type: boolean
-              description: Confirmation response (if required)
+              description: Confirmation response (if paused for selection confirmation)
+            selected_index:
+              type: integer
+              description: Index of selected option (if choosing different from recommended)
+            action:
+              type: string
+              enum: [retry, skip, cancel]
+              description: Action to take (if paused for error guidance)
           example:
-            api_key: "your-api-key-here"
+            confirmed: true
     responses:
       200:
-        description: Workflow resumed and completed successfully
+        description: Workflow resumed and completed/paused again
         schema:
           type: object
           properties:
@@ -2789,9 +2810,15 @@ def resume_workflow(workflow_id):
             paused:
               type: boolean
               description: True if workflow is paused again waiting for more input
+            current_step:
+              type: string
+              description: Current step in the workflow
             human_input_request:
               type: object
               description: Details about required input if paused again
+            cancelled:
+              type: boolean
+              description: True if workflow was cancelled by user
       400:
         description: Invalid request or workflow not paused
         schema:
@@ -2825,6 +2852,14 @@ def resume_workflow(workflow_id):
         if result.get("error", {}).get("issue") == "Workflow not paused":
             return jsonify(result), 400
 
+        if result.get("cancelled"):
+            return jsonify({
+                "success": False,
+                "workflow_id": result["workflow_id"],
+                "cancelled": True,
+                "message": "Workflow cancelled by user"
+            }), 200
+
         if result["success"]:
             # Reload connectors to pick up the new source
             connector_manager.load_connectors()
@@ -2841,6 +2876,7 @@ def resume_workflow(workflow_id):
                 "success": False,
                 "workflow_id": result["workflow_id"],
                 "paused": True,
+                "current_step": result.get("current_step"),
                 "human_input_request": result.get("human_input_request"),
                 "error": result.get("error"),
                 "message": "Workflow still requires additional input"
