@@ -23,3 +23,11 @@ class Config:
     DISCOVERY_TEST_RETRIES = int(os.getenv("DISCOVERY_TEST_RETRIES", 3))
     DISCOVERY_TEST_BACKOFF = float(os.getenv("DISCOVERY_TEST_BACKOFF", 2.0))
     DISCOVERY_REQUEST_TIMEOUT = int(os.getenv("DISCOVERY_REQUEST_TIMEOUT", 30))
+
+    # API Key Gathering Configuration
+    ARCADE_API_KEY = os.getenv("ARCADE_API_KEY", "")
+    DISCOVERY_EMAIL = os.getenv("DISCOVERY_EMAIL", "")
+    ARCADE_USER_ID = os.getenv("ARCADE_USER_ID", "")  # Optional, defaults to DISCOVERY_EMAIL
+    API_KEY_CHECK_INTERVAL = int(os.getenv("API_KEY_CHECK_INTERVAL", 30))  # Seconds between email checks
+    API_KEY_CHECK_MAX_ATTEMPTS = int(os.getenv("API_KEY_CHECK_MAX_ATTEMPTS", 20))  # Max email check attempts
+    API_KEY_ENCRYPTION_KEY = os.getenv("API_KEY_ENCRYPTION_KEY", "")  # Fernet key for API key encryption
