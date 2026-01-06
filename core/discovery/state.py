@@ -308,6 +308,13 @@ class DiscoveryState(TypedDict, total=False):
     test_passed: bool
     testing_completed: bool
 
+    # API Key Acquisition fields
+    api_key_acquired: bool
+    api_key_source: Optional[str]  # "automatic", "existing", "manual"
+    api_key_acquisition_attempted: bool
+    api_key_acquisition_error: Optional[str]
+    email_check_attempts: int
+
     # Configuration Agent outputs
     config_id: Optional[str]
     source_id: Optional[str]
@@ -370,6 +377,11 @@ def create_initial_state(user_description: str, workflow_id: str = None) -> Disc
         test_results=None,
         test_passed=False,
         testing_completed=False,
+        api_key_acquired=False,
+        api_key_source=None,
+        api_key_acquisition_attempted=False,
+        api_key_acquisition_error=None,
+        email_check_attempts=0,
         config_id=None,
         source_id=None,
         configuration_completed=False,

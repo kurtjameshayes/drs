@@ -34,6 +34,7 @@ from .agents import (
     DocumentationAgent,
     TestingAgent,
     ConfigurationAgent,
+    APIKeyAgent,
 )
 from models.workflow_state import WorkflowState, WorkflowStatus, PauseReason
 
@@ -90,6 +91,7 @@ class DataSourceDiscoveryWorkflow:
         self.selection_agent = SelectionAgent(require_confirmation=require_selection_confirmation)
         self.documentation_agent = DocumentationAgent()
         self.testing_agent = TestingAgent()
+        self.api_key_agent = APIKeyAgent(db_client)
         self.configuration_agent = ConfigurationAgent(db_client)
 
         # Build the graph
@@ -106,6 +108,7 @@ class DataSourceDiscoveryWorkflow:
         workflow.add_node("select", self._select_node)
         workflow.add_node("document", self._document_node)
         workflow.add_node("test", self._test_node)
+        workflow.add_node("acquire_api_key", self._acquire_api_key_node)
         workflow.add_node("configure", self._configure_node)
 
         # Set the entry point
@@ -150,9 +153,19 @@ class DataSourceDiscoveryWorkflow:
 
         workflow.add_conditional_edges(
             "test",
-            self._check_interrupted,
+            self._check_after_test,
             {
-                "continue": "configure",
+                "needs_key": "acquire_api_key",
+                "configure": "configure",
+                "stop": END,
+            }
+        )
+
+        workflow.add_conditional_edges(
+            "acquire_api_key",
+            self._check_after_key_acquisition,
+            {
+                "retry_test": "test",
                 "stop": END,
             }
         )
@@ -360,6 +373,56 @@ class DataSourceDiscoveryWorkflow:
 
         self._persist_state(state, "test")
         return state
+
+    def _acquire_api_key_node(self, state: DiscoveryState) -> DiscoveryState:
+        """Execute the API key acquisition agent."""
+        logger.info("Workflow: Entering API key acquisition node")
+        state["current_step"] = "acquire_api_key"
+        state = self.api_key_agent.run(state)
+        self._persist_state(state, "acquire_api_key")
+        return state
+
+    def _check_after_test(self, state: DiscoveryState) -> Literal["needs_key", "configure", "stop"]:
+        """Check what to do after testing."""
+        # If test succeeded, go to configure
+        test_results = state.get("test_results", {})
+        if test_results.get("success"):
+            return "configure"
+
+        # If interrupted with auth error and haven't tried key acquisition
+        if state.get("interrupted"):
+            error = state.get("error", {})
+            error_issue = error.get("issue", "").lower()
+
+            # Check if it's an auth error
+            if any(
+                keyword in error_issue
+                for keyword in ["authentication", "authorization", "401", "403", "api key"]
+            ):
+                # Only attempt key acquisition once
+                if not state.get("api_key_acquisition_attempted"):
+                    logger.info("Auth error detected, attempting API key acquisition")
+                    return "needs_key"
+
+        # Check if waiting for human input (may be set by testing agent)
+        if state.get("waiting_for_human_input"):
+            return "stop"
+
+        # Otherwise stop (will pause for human input or end with error)
+        return "stop"
+
+    def _check_after_key_acquisition(
+        self, state: DiscoveryState
+    ) -> Literal["retry_test", "stop"]:
+        """Check what to do after key acquisition attempt."""
+        if state.get("api_key_acquired"):
+            # Successfully acquired key, retry test
+            logger.info("API key acquired, retrying test")
+            return "retry_test"
+        else:
+            # Failed to acquire, stop (will pause for manual input)
+            logger.info("API key acquisition failed, pausing for manual input")
+            return "stop"
 
     def _configure_node(self, state: DiscoveryState) -> DiscoveryState:
         """Execute the configuration agent."""
