@@ -5,7 +5,7 @@ Agent for automatically acquiring API keys for data sources.
 Orchestrates key checking, registration analysis, and email polling.
 """
 
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import logging
 import asyncio
 from pymongo import MongoClient
