@@ -1,6 +1,8 @@
 from typing import Dict, Any, Optional, List
 from core.base_connector import BaseConnector
 from models.connector_config import ConnectorConfig
+from pymongo import MongoClient
+from config import Config
 import importlib
 import logging
 
@@ -11,18 +13,34 @@ class ConnectorManager:
     """
     Manages connector lifecycle, registration, and request routing.
     """
-    
-    def __init__(self, config_model: ConnectorConfig = None):
+
+    def __init__(self, config_model: ConnectorConfig = None, db_client: MongoClient = None):
         """
         Initialize the connector manager.
-        
+
         Args:
             config_model: ConnectorConfig instance for loading configurations
+            db_client: MongoDB client for accessing API key store
         """
         self.config_model = config_model or ConnectorConfig()
         self.connectors: Dict[str, BaseConnector] = {}
         self.connector_classes: Dict[str, type] = {}
+
+        # Initialize API key store
+        if db_client is None:
+            db_client = MongoClient(Config.MONGO_URI)
+        self.key_store = self._init_key_store(db_client)
+
         self._register_builtin_connectors()
+
+    def _init_key_store(self, db_client: MongoClient):
+        """Initialize API key store if available."""
+        try:
+            from core.discovery.services.api_key_store import APIKeyStore
+            return APIKeyStore(db_client)
+        except Exception as e:
+            logger.warning(f"API key store not available: {e}")
+            return None
     
     def _register_builtin_connectors(self):
         """Register built-in connector types."""
@@ -56,18 +74,49 @@ class ConnectorManager:
             logger.error(f"Failed to load connector {connector_type}: {str(e)}")
             return None
     
+    def _enrich_config_with_api_key(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Enrich connector config with API key from key store if available.
+
+        Args:
+            config: Connector configuration dict
+
+        Returns:
+            Config with API key populated from store if available
+        """
+        if not self.key_store:
+            return config
+
+        # If config already has a valid API key, use it
+        if config.get("api_key"):
+            return config
+
+        # Try to get API key from store using base URL
+        base_url = config.get("url", "")
+        if base_url:
+            stored_key = self.key_store.get_key(base_url)
+            if stored_key:
+                config = config.copy()
+                config["api_key"] = stored_key
+                logger.info(f"Using stored API key for {config.get('source_id')}")
+
+        return config
+
     def load_connectors(self):
         """Load all active connectors from configuration."""
         configs = self.config_model.get_all(active_only=True)
-        
+
         for config in configs:
             source_id = config["source_id"]
             connector_type = config["connector_type"]
-            
+
             try:
+                # Enrich config with API key from store
+                enriched_config = self._enrich_config_with_api_key(config)
+
                 connector_class = self._load_connector_class(connector_type)
                 if connector_class:
-                    connector = connector_class(config)
+                    connector = connector_class(enriched_config)
                     if connector.connect():
                         self.connectors[source_id] = connector
                         logger.info(f"Loaded connector: {source_id}")
@@ -79,25 +128,28 @@ class ConnectorManager:
     def get_connector(self, source_id: str) -> Optional[BaseConnector]:
         """
         Get a connector by source ID.
-        
+
         Args:
             source_id: Unique identifier for the data source
-            
+
         Returns:
             BaseConnector instance or None if not found
         """
         if source_id not in self.connectors:
             config = self.config_model.get_by_source_id(source_id)
             if config and config.get("active"):
+                # Enrich config with API key from store
+                enriched_config = self._enrich_config_with_api_key(config)
+
                 connector_type = config["connector_type"]
                 connector_class = self._load_connector_class(connector_type)
                 if connector_class:
-                    connector = connector_class(config)
+                    connector = connector_class(enriched_config)
                     if connector.connect():
                         self.connectors[source_id] = connector
                     else:
                         return None
-        
+
         return self.connectors.get(source_id)
     
     def query(self, source_id: str, parameters: Dict[str, Any],
