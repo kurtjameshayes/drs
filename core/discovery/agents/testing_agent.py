@@ -25,6 +25,7 @@ from ..state import (
 )
 from ..prompts import TESTING_AGENT_SYSTEM, TESTING_AGENT_TASK
 from ..tools import make_http_request
+from ..llm_logger import invoke_llm_with_logging
 
 logger = logging.getLogger(__name__)
 
@@ -252,7 +253,12 @@ Does this response contain or indicate access to relevant data?"""),
         ]
 
         try:
-            response = self.llm.invoke(messages)
+            response = invoke_llm_with_logging(
+                self.llm,
+                messages,
+                agent_name="TestingAgent",
+                operation="validate_response"
+            )
             content = response.content
 
             start = content.find("{")

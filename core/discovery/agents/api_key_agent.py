@@ -10,6 +10,7 @@ import logging
 import asyncio
 from pymongo import MongoClient
 from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import HumanMessage
 
 from core.discovery.state import (
     DiscoveryState,
@@ -19,6 +20,7 @@ from core.discovery.state import (
 )
 from core.discovery.services.api_key_store import APIKeyStore
 from core.discovery.services.arcade_email_service import ArcadeEmailService
+from core.discovery.llm_logger import invoke_llm_with_logging
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -169,8 +171,6 @@ class APIKeyAgent:
         Returns:
             Registration analysis dict
         """
-        from langchain_core.messages import HumanMessage
-
         prompt = f"""Analyze this API registration information to determine the best approach for automatic API key acquisition.
 
 Data Source: {source_name}
@@ -210,7 +210,13 @@ Return JSON:
 """
 
         try:
-            response = self.llm.invoke([HumanMessage(content=prompt)])
+            messages = [HumanMessage(content=prompt)]
+            response = invoke_llm_with_logging(
+                self.llm,
+                messages,
+                agent_name="APIKeyAgent",
+                operation="analyze_registration"
+            )
             import json
 
             content = response.content
