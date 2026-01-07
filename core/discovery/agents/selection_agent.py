@@ -22,6 +22,7 @@ from ..state import (
     HumanInputType,
 )
 from ..prompts import SELECTION_AGENT_SYSTEM, SELECTION_AGENT_TASK
+from ..llm_logger import invoke_llm_with_logging
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +161,12 @@ class SelectionAgent:
         ]
 
         try:
-            response = self.llm.invoke(messages)
+            response = invoke_llm_with_logging(
+                self.llm,
+                messages,
+                agent_name="SelectionAgent",
+                operation="select_best_source"
+            )
             content = response.content
 
             # Extract JSON from response

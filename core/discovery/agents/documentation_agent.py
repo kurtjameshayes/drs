@@ -24,6 +24,7 @@ from ..state import (
 )
 from ..prompts import DOCUMENTATION_AGENT_SYSTEM, DOCUMENTATION_AGENT_TASK, CONNECTOR_TYPE_MAPPING
 from ..tools import fetch_url, parse_openapi_spec, check_api_availability
+from ..llm_logger import invoke_llm_with_logging
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +59,12 @@ class DocumentationAgent:
         ]
 
         try:
-            response = self.llm.invoke(messages)
+            response = invoke_llm_with_logging(
+                self.llm,
+                messages,
+                agent_name="DocumentationAgent",
+                operation="determine_connector_type"
+            )
             content = response.content
 
             start = content.find("{")
@@ -151,7 +157,12 @@ class DocumentationAgent:
         ]
 
         try:
-            response = self.llm.invoke(messages)
+            response = invoke_llm_with_logging(
+                self.llm,
+                messages,
+                agent_name="DocumentationAgent",
+                operation="extract_documentation"
+            )
             content = response.content
 
             # Extract JSON from response

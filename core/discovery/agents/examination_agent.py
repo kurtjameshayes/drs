@@ -21,6 +21,7 @@ from ..state import (
 )
 from ..prompts import EXAMINATION_AGENT_SYSTEM, EXAMINATION_AGENT_TASK
 from ..tools import fetch_url, check_api_availability, detect_access_methods, find_documentation_url
+from ..llm_logger import invoke_llm_with_logging
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +97,12 @@ Based on this information, provide your analysis as JSON."""),
         ]
 
         try:
-            response = self.llm.invoke(messages)
+            response = invoke_llm_with_logging(
+                self.llm,
+                messages,
+                agent_name="ExaminationAgent",
+                operation="analyze_source"
+            )
             response_content = response.content
 
             # Extract JSON from response

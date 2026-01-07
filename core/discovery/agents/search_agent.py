@@ -21,6 +21,7 @@ from models.connector_config import ConnectorConfig
 from ..state import DiscoveryState, DataSourceCandidate, WorkflowError, HumanInputRequest, HumanInputType
 from ..prompts import SEARCH_AGENT_SYSTEM, SEARCH_AGENT_TASK
 from ..tools import web_search, search_data_gov, search_apis_guru
+from ..llm_logger import invoke_llm_with_logging
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +133,12 @@ Example output: ["query 1", "query 2", "query 3"]"""),
         ]
 
         try:
-            response = self.llm.invoke(messages)
+            response = invoke_llm_with_logging(
+                self.llm,
+                messages,
+                agent_name="SearchAgent",
+                operation="generate_search_queries"
+            )
             content = response.content
 
             # Extract JSON array from response
@@ -188,7 +194,12 @@ Score each source by relevance to the user's needs.""")
         ]
 
         try:
-            response = self.llm.invoke(messages)
+            response = invoke_llm_with_logging(
+                self.llm,
+                messages,
+                agent_name="SearchAgent",
+                operation="score_and_rank_results"
+            )
             content = response.content
 
             # Extract JSON array
