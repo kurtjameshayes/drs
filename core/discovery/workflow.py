@@ -759,12 +759,23 @@ class DataSourceDiscoveryWorkflow:
             }
 
         if workflow_doc["status"] != WorkflowStatus.PAUSED.value:
-            return {
+            error_response = {
                 "success": False,
                 "workflow_id": workflow_id,
-                "error": {"issue": "Workflow not paused", "details": f"Workflow status is {workflow_doc['status']}"},
+                "error": {
+                    "issue": "Workflow not paused",
+                    "details": f"Workflow status is {workflow_doc['status']}"
+                },
                 "paused": False,
+                "current_status": workflow_doc["status"],
             }
+
+            # If workflow failed, include error details to help with debugging
+            if workflow_doc["status"] == WorkflowStatus.FAILED.value and workflow_doc.get("error"):
+                error_response["error"]["failure_reason"] = workflow_doc["error"]
+                error_response["error"]["failed_at_step"] = workflow_doc.get("current_step")
+
+            return error_response
 
         # Get the saved state and pause reason
         saved_state = workflow_doc["state"]
@@ -900,6 +911,168 @@ class DataSourceDiscoveryWorkflow:
             True if cancelled successfully
         """
         return self.workflow_state_model.cancel(workflow_id)
+
+    def retry_failed_workflow(self, workflow_id: str, from_step: str = None) -> Dict[str, Any]:
+        """
+        Retry a failed workflow, optionally from a specific step.
+
+        Args:
+            workflow_id: ID of the failed workflow
+            from_step: Optional step to retry from. If None, retries from the failed step.
+                      Valid steps: 'search', 'selection', 'examine', 'documentation',
+                                   'api_key', 'testing', 'config', 'report'
+
+        Returns:
+            Workflow result dictionary (same as run())
+        """
+        logger.info(f"Retrying failed workflow {workflow_id} from step: {from_step or 'failed step'}")
+
+        # Get the saved workflow state
+        workflow_doc = self.workflow_state_model.get_by_workflow_id(workflow_id)
+        if not workflow_doc:
+            return {
+                "success": False,
+                "workflow_id": workflow_id,
+                "error": {
+                    "issue": "Workflow not found",
+                    "details": f"No workflow with ID {workflow_id}"
+                },
+            }
+
+        # Check if workflow is actually failed
+        if workflow_doc["status"] != WorkflowStatus.FAILED.value:
+            return {
+                "success": False,
+                "workflow_id": workflow_id,
+                "error": {
+                    "issue": "Workflow not in failed status",
+                    "details": f"Workflow status is {workflow_doc['status']}. Only failed workflows can be retried."
+                },
+                "current_status": workflow_doc["status"],
+            }
+
+        # Get the saved state
+        saved_state = workflow_doc["state"]
+        retry_step = from_step or workflow_doc.get("current_step", "search")
+
+        logger.info(f"Retrying from step: {retry_step}")
+
+        # Reset interrupted flag and clear error
+        saved_state["interrupted"] = False
+        saved_state["waiting_for_human_input"] = False
+        if "error" in saved_state:
+            saved_state["previous_error"] = saved_state.pop("error")  # Keep for reference
+
+        # Update status to running
+        self.workflow_state_model.update_state(
+            workflow_id=workflow_id,
+            state=dict(saved_state),
+            current_step=retry_step,
+            status=WorkflowStatus.RUNNING,
+        )
+
+        try:
+            # Run remaining steps from the retry point
+            result = self._execute_from_step(saved_state, retry_step)
+
+            # Determine final status
+            if result.get("interrupted"):
+                if result.get("waiting_for_human_input"):
+                    final_status = WorkflowStatus.PAUSED
+                else:
+                    final_status = WorkflowStatus.FAILED
+            else:
+                final_status = WorkflowStatus.COMPLETED
+
+            # Update final status
+            if final_status == WorkflowStatus.COMPLETED:
+                self.workflow_state_model.mark_completed(
+                    workflow_id=workflow_id,
+                    state=dict(result),
+                    report=result.get("final_report"),
+                )
+            elif final_status == WorkflowStatus.FAILED:
+                self.workflow_state_model.mark_failed(
+                    workflow_id=workflow_id,
+                    state=dict(result),
+                    error=result.get("error"),
+                )
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Error retrying workflow: {str(e)}", exc_info=True)
+            error_dict = {
+                "type": "retry_error",
+                "message": str(e),
+                "details": f"Failed while retrying from step: {retry_step}",
+                "recoverable": True,
+            }
+            self.workflow_state_model.mark_failed(
+                workflow_id=workflow_id,
+                state=dict(saved_state),
+                error=error_dict,
+            )
+            return {
+                "success": False,
+                "workflow_id": workflow_id,
+                "error": error_dict,
+            }
+
+    def _execute_from_step(self, state: DiscoveryState, start_step: str) -> DiscoveryState:
+        """
+        Execute workflow from a specific step.
+
+        Args:
+            state: Current workflow state
+            start_step: Step to start from
+
+        Returns:
+            Final state after execution
+        """
+        # Define the step order
+        step_order = [
+            "search",
+            "selection",
+            "examine",
+            "documentation",
+            "api_key",
+            "testing",
+            "config",
+            "report"
+        ]
+
+        # Find the starting index
+        try:
+            start_index = step_order.index(start_step)
+        except ValueError:
+            logger.warning(f"Unknown step '{start_step}', starting from beginning")
+            start_index = 0
+
+        # Execute remaining steps
+        for step in step_order[start_index:]:
+            if state.get("interrupted"):
+                break
+
+            # Execute the appropriate step
+            if step == "search":
+                state = self._search_node(state)
+            elif step == "selection":
+                state = self._selection_node(state)
+            elif step == "examine":
+                state = self._examine_node(state)
+            elif step == "documentation":
+                state = self._documentation_node(state)
+            elif step == "api_key":
+                state = self._api_key_node(state)
+            elif step == "testing":
+                state = self._testing_node(state)
+            elif step == "config":
+                state = self._configuration_node(state)
+            elif step == "report":
+                state = self._report_node(state)
+
+        return state
 
     async def run_async(self, user_description: str, workflow_id: str = None) -> Dict[str, Any]:
         """

@@ -2894,6 +2894,119 @@ def resume_workflow(workflow_id):
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route('/api/v1/discovery/<workflow_id>/retry', methods=['POST'])
+def retry_workflow(workflow_id):
+    """
+    Retry a failed workflow from a specific step or from where it failed
+    ---
+    tags:
+      - Discovery
+    parameters:
+      - name: workflow_id
+        in: path
+        type: string
+        required: true
+        description: Workflow identifier
+      - name: body
+        in: body
+        required: false
+        schema:
+          type: object
+          properties:
+            from_step:
+              type: string
+              enum: [search, selection, examine, documentation, api_key, testing, config, report]
+              description: Optional step to retry from. If not provided, retries from the failed step.
+          example:
+            from_step: "testing"
+    responses:
+      200:
+        description: Workflow retried successfully
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            workflow_id:
+              type: string
+            source_id:
+              type: string
+            config_id:
+              type: string
+            paused:
+              type: boolean
+            current_step:
+              type: string
+            human_input_request:
+              type: object
+            error:
+              type: object
+      400:
+        description: Workflow not in failed status
+      404:
+        description: Workflow not found
+      500:
+        description: Server error
+    """
+    try:
+        from core.discovery.workflow import DataSourceDiscoveryWorkflow
+
+        # Get optional from_step parameter
+        data = request.get_json() or {}
+        from_step = data.get("from_step")
+
+        workflow = DataSourceDiscoveryWorkflow()
+        result = workflow.retry_failed_workflow(workflow_id, from_step=from_step)
+
+        # Handle not found
+        if result.get("error", {}).get("issue") == "Workflow not found":
+            return jsonify(result), 404
+
+        # Handle not failed status
+        if result.get("error", {}).get("issue") == "Workflow not in failed status":
+            return jsonify(result), 400
+
+        # Handle successful completion
+        if result["success"]:
+            # Reload connectors to pick up the new source
+            connector_manager.load_connectors()
+
+            return jsonify({
+                "success": True,
+                "workflow_id": result["workflow_id"],
+                "source_id": result.get("source_id"),
+                "config_id": result.get("config_id"),
+                "paused": False,
+                "message": "Workflow retried and completed successfully"
+            }), 200
+
+        # Handle paused (needs human input again)
+        elif result.get("paused"):
+            return jsonify({
+                "success": False,
+                "workflow_id": result["workflow_id"],
+                "paused": True,
+                "current_step": result.get("current_step"),
+                "human_input_request": result.get("human_input_request"),
+                "error": result.get("error"),
+                "message": "Workflow retried but requires human input"
+            }), 200
+
+        # Handle failed again
+        else:
+            return jsonify({
+                "success": False,
+                "workflow_id": result["workflow_id"],
+                "error": result.get("error"),
+                "paused": False,
+                "message": "Workflow retry failed"
+            }), 400
+
+    except Exception as e:
+        logger.error(f"Error retrying workflow: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route('/api/v1/discovery/<workflow_id>/cancel', methods=['POST'])
 def cancel_workflow(workflow_id):
     """
