@@ -172,7 +172,7 @@ Access Method: {access_method}
 Provide complete documentation including:
 
 1. base_url: The base URL for API/service requests
-2. access_method: Confirmed access method ("api", "web_service", "download")
+2. access_method: Confirmed access method ("api", "web_service", "download", "contact_required", "unknown")
 3. authentication:
    - required: true/false
    - auth_type: "api_key", "oauth", "basic", or "none"

@@ -17,6 +17,7 @@ class AccessMethod(str, Enum):
     API = "api"
     WEB_SERVICE = "web_service"
     DOWNLOAD = "download"
+    CONTACT_REQUIRED = "contact_required"
     UNKNOWN = "unknown"
 
 
