@@ -26,7 +26,10 @@ A flexible, extensible data retrieval framework built with Python and MongoDB.
 cd data_retrieval_system
 pip install -r requirements.txt
 cp .env.example .env
+# Edit .env and add required configuration (see API Key Encryption section below)
 ```
+
+**Important:** After updating your `.env` file or making configuration changes, restart the server for changes to take effect.
 
 ### Initialize Database
 
@@ -177,11 +180,27 @@ language descriptions.
 
 ### Prerequisites
 
-Set the following environment variables:
+Set the following environment variables in your `.env` file:
+
 ```bash
 ANTHROPIC_API_KEY=your_anthropic_api_key
 TAVILY_API_KEY=your_tavily_api_key
+
+# CRITICAL: API Key Encryption Key (required for API key storage)
+# Generate with: python3 scripts/generate_encryption_key.py
+API_KEY_ENCRYPTION_KEY=your_generated_encryption_key
 ```
+
+**Important:** The `API_KEY_ENCRYPTION_KEY` is required for the system to securely store API keys in MongoDB. Without this key:
+- The system will generate a temporary key on each restart
+- Previously stored API keys will become unreadable after restart
+
+To generate a secure encryption key:
+```bash
+python3 scripts/generate_encryption_key.py
+```
+
+Copy the generated key and add it to your `.env` file. **Never commit this key to version control.**
 
 ### Discovery Workflow
 
