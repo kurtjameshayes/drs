@@ -31,3 +31,6 @@ class Config:
     API_KEY_CHECK_INTERVAL = int(os.getenv("API_KEY_CHECK_INTERVAL", 30))  # Seconds between email checks
     API_KEY_CHECK_MAX_ATTEMPTS = int(os.getenv("API_KEY_CHECK_MAX_ATTEMPTS", 20))  # Max email check attempts
     API_KEY_ENCRYPTION_KEY = os.getenv("API_KEY_ENCRYPTION_KEY", "")  # Fernet key for API key encryption
+
+    # Workflow Orchestration Configuration
+    ENABLE_INTELLIGENT_WORKFLOW_ROUTING = os.getenv("ENABLE_INTELLIGENT_WORKFLOW_ROUTING", "true").lower() == "true"
