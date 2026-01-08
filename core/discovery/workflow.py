@@ -36,6 +36,10 @@ from .agents import (
     ConfigurationAgent,
     APIKeyAgent,
 )
+from .agents.workflow_decision_agent import (
+    WorkflowDecisionAgent,
+    RecoveryDecision,
+)
 from models.workflow_state import WorkflowState, WorkflowStatus, PauseReason
 
 logger = logging.getLogger(__name__)
@@ -93,6 +97,15 @@ class DataSourceDiscoveryWorkflow:
         self.testing_agent = TestingAgent()
         self.api_key_agent = APIKeyAgent(db_client)
         self.configuration_agent = ConfigurationAgent(db_client)
+
+        # Initialize workflow decision agent if intelligent routing is enabled
+        if Config.ENABLE_INTELLIGENT_WORKFLOW_ROUTING:
+            self.decision_agent = WorkflowDecisionAgent()
+        else:
+            self.decision_agent = None
+
+        # Track action history for LLM context
+        self.action_history = []
 
         # Build the graph
         self.graph = self._build_graph()
@@ -157,6 +170,7 @@ class DataSourceDiscoveryWorkflow:
             {
                 "needs_key": "acquire_api_key",
                 "configure": "configure",
+                "retry_test": "test",  # Loop back to test for retries
                 "stop": END,
             }
         )
@@ -382,13 +396,146 @@ class DataSourceDiscoveryWorkflow:
         self._persist_state(state, "acquire_api_key")
         return state
 
-    def _check_after_test(self, state: DiscoveryState) -> Literal["needs_key", "configure", "stop"]:
-        """Check what to do after testing."""
-        # If test succeeded, go to configure
+    def _check_after_test(self, state: DiscoveryState) -> Literal["needs_key", "configure", "stop", "retry_test"]:
+        """
+        Intelligently determine next action after test step.
+
+        Uses LLM-based decision agent for complex error scenarios (if enabled),
+        with rule-based fast paths for simple cases.
+        """
+        # Fast path: Success -> configure
         test_results = state.get("test_results", {})
         if test_results.get("success"):
+            logger.info("Test succeeded, proceeding to configure")
             return "configure"
 
+        # Fast path: Explicit human input request -> stop
+        if state.get("waiting_for_human_input"):
+            logger.info("Workflow paused for human input")
+            return "stop"
+
+        # If intelligent routing is enabled and we have a decision agent, use it
+        if Config.ENABLE_INTELLIGENT_WORKFLOW_ROUTING and self.decision_agent:
+            return self._check_after_test_intelligent(state)
+        else:
+            return self._check_after_test_legacy(state)
+
+    def _check_after_test_intelligent(self, state: DiscoveryState) -> Literal["needs_key", "configure", "stop", "retry_test"]:
+        """Use LLM-based decision agent for error analysis."""
+        if not state.get("interrupted"):
+            return "stop"
+
+        error = state.get("error", {})
+        test_results = state.get("test_results", {})
+
+        # Build context for decision agent
+        error_context = {
+            "issue": error.get("issue", "Unknown"),
+            "details": error.get("details", ""),
+            "status_code": test_results.get("status_code"),
+            "agent_name": error.get("agent_name", "Unknown")
+        }
+
+        workflow_state = {
+            "current_step": "test",
+            "test_attempts": state.get("test_attempts", 0),
+            "api_key_present": bool(
+                state.get("access_documentation", {}).get("_provided_api_key")
+            ),
+            "api_key_acquisition_attempted": state.get("api_key_acquisition_attempted", False),
+            "selected_source_name": state.get("selected_source", {}).get("candidate", {}).get("name", "Unknown"),
+            "action_history": self.action_history
+        }
+
+        # Get LLM decision
+        logger.info("Analyzing error with WorkflowDecisionAgent...")
+        decision = self.decision_agent.analyze_error_recovery(
+            error_context=error_context,
+            workflow_state=workflow_state
+        )
+
+        # Log decision for audit trail
+        logger.info(
+            f"WorkflowDecisionAgent recommendation: {decision.action} "
+            f"(confidence: {decision.confidence:.2f})\n"
+            f"Reasoning: {decision.reasoning}"
+        )
+
+        # Store decision in state for debugging
+        state["last_decision"] = {
+            "action": decision.action,
+            "reasoning": decision.reasoning,
+            "confidence": decision.confidence,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+        # Track action in history
+        self.action_history.append(
+            f"test_failed -> {decision.action} ({decision.reasoning[:50]}...)"
+        )
+
+        # Safety check: Should we pause for human input?
+        should_pause, pause_reason = self.decision_agent.should_pause_for_human(
+            error_context=error_context,
+            workflow_state=workflow_state,
+            recovery_decision=decision
+        )
+
+        if should_pause:
+            logger.info(f"Pausing for human input: {pause_reason}")
+            state["waiting_for_human_input"] = True
+            state["pause_reason"] = "error_requires_manual_review"
+            state["human_input_request"] = {
+                "type": "error_guidance",
+                "description": decision.user_message or pause_reason,
+                "context": error_context
+            }
+            return "stop"
+
+        # Execute recommended action with safety checks
+        if decision.action == "needs_key":
+            # Safety: Only attempt acquisition once
+            if state.get("api_key_acquisition_attempted"):
+                logger.warning("API key acquisition already attempted, pausing instead")
+                state["waiting_for_human_input"] = True
+                return "stop"
+            logger.info("Routing to API key acquisition")
+            return "needs_key"
+
+        elif decision.action == "retry_test":
+            # Safety: Enforce max retries
+            attempts = state.get("test_attempts", 0)
+            max_retries = decision.max_retries_suggestion
+            if attempts >= max_retries:
+                logger.warning(f"Max retries ({max_retries}) exceeded, pausing")
+                state["waiting_for_human_input"] = True
+                state["pause_reason"] = "max_retries_exceeded"
+                return "stop"
+
+            logger.info(f"Retrying test (attempt {attempts + 1}/{max_retries})")
+            state["test_attempts"] = attempts + 1
+            return "retry_test"
+
+        elif decision.action == "configure":
+            # Error is minor, proceed
+            logger.info("Error deemed minor, proceeding to configure")
+            state["interrupted"] = False  # Clear interrupted flag
+            return "configure"
+
+        elif decision.action == "skip_source":
+            # Skip to next candidate - NOT FULLY IMPLEMENTED YET
+            # For now, treat as pause
+            logger.warning("skip_source not yet implemented, pausing for manual input")
+            state["waiting_for_human_input"] = True
+            return "stop"
+
+        else:  # pause_manual or unknown
+            logger.info("Pausing for manual input")
+            state["waiting_for_human_input"] = True
+            return "stop"
+
+    def _check_after_test_legacy(self, state: DiscoveryState) -> Literal["needs_key", "configure", "stop"]:
+        """Legacy rule-based routing logic."""
         # If interrupted with auth error and haven't tried key acquisition
         if state.get("interrupted"):
             error = state.get("error", {})
@@ -403,10 +550,6 @@ class DataSourceDiscoveryWorkflow:
                 if not state.get("api_key_acquisition_attempted"):
                     logger.info("Auth error detected, attempting API key acquisition")
                     return "needs_key"
-
-        # Check if waiting for human input (may be set by testing agent)
-        if state.get("waiting_for_human_input"):
-            return "stop"
 
         # Otherwise stop (will pause for human input or end with error)
         return "stop"
