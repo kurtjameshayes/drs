@@ -65,39 +65,61 @@ class SearchAgent:
         Returns:
             List of matching connector configurations
         """
-        description_lower = user_description.lower()
-        matching_sources = []
+        try:
+            # Handle None or empty description
+            if not user_description:
+                logger.warning("Empty user description provided to _find_existing_sources")
+                return []
 
-        # Get all active connectors
-        all_connectors = self.connector_config.get_all(active_only=True)
+            description_lower = user_description.lower()
+            matching_sources = []
 
-        for connector in all_connectors:
-            connector_type = connector.get("connector_type", "").lower()
-            source_name = connector.get("source_name", "").lower()
+            # Get all active connectors
+            all_connectors = self.connector_config.get_all(active_only=True)
 
-            # Check if connector type has matching keywords
-            keywords = self.CONNECTOR_TYPE_KEYWORDS.get(connector_type, [])
+            for connector in all_connectors:
+                try:
+                    # Handle None values gracefully
+                    connector_type = connector.get("connector_type") or ""
+                    source_name = connector.get("source_name") or ""
 
-            # Check if any keyword is in the user's description
-            match_score = 0
-            for keyword in keywords:
-                if keyword in description_lower:
-                    match_score += 1
+                    if not isinstance(connector_type, str):
+                        connector_type = str(connector_type)
+                    if not isinstance(source_name, str):
+                        source_name = str(source_name)
 
-            # Also check source name
-            if source_name:
-                for word in source_name.split():
-                    if len(word) > 3 and word in description_lower:
-                        match_score += 1
+                    connector_type = connector_type.lower()
+                    source_name = source_name.lower()
 
-            if match_score > 0:
-                connector["_match_score"] = match_score
-                matching_sources.append(connector)
+                    # Check if connector type has matching keywords
+                    keywords = self.CONNECTOR_TYPE_KEYWORDS.get(connector_type, [])
 
-        # Sort by match score
-        matching_sources.sort(key=lambda x: x.get("_match_score", 0), reverse=True)
+                    # Check if any keyword is in the user's description
+                    match_score = 0
+                    for keyword in keywords:
+                        if keyword in description_lower:
+                            match_score += 1
 
-        return matching_sources
+                    # Also check source name
+                    if source_name:
+                        for word in source_name.split():
+                            if len(word) > 3 and word in description_lower:
+                                match_score += 1
+
+                    if match_score > 0:
+                        connector["_match_score"] = match_score
+                        matching_sources.append(connector)
+                except Exception as e:
+                    logger.warning(f"Failed to process connector during matching: {e}, connector: {connector}")
+                    continue
+
+            # Sort by match score
+            matching_sources.sort(key=lambda x: x.get("_match_score", 0), reverse=True)
+
+            return matching_sources
+        except Exception as e:
+            logger.error(f"Failed to find existing sources: {e}", exc_info=True)
+            return []
 
     def _format_existing_source_options(self, sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Format existing sources as selection options."""
@@ -165,9 +187,19 @@ Example output: ["query 1", "query 2", "query 3"]"""),
         unique_results = []
 
         for result in results:
-            url = result.get("url", "").lower().rstrip("/")
-            if url and url not in seen_urls:
-                seen_urls.add(url)
+            try:
+                # Handle None values gracefully
+                url = result.get("url") or ""
+                if not isinstance(url, str):
+                    url = str(url) if url is not None else ""
+                url = url.lower().rstrip("/")
+
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    unique_results.append(result)
+            except Exception as e:
+                logger.warning(f"Failed to process result for deduplication: {e}, result: {result}")
+                # Still include the result even if URL processing failed
                 unique_results.append(result)
 
         return unique_results
@@ -176,6 +208,42 @@ Example output: ["query 1", "query 2", "query 3"]"""),
         self, results: List[Dict[str, Any]], user_description: str
     ) -> List[DataSourceCandidate]:
         """Score and rank results by relevance."""
+
+        def _safe_get_string(result: Dict[str, Any], *keys: str, default: str = "") -> str:
+            """Safely get a string value from result, handling None and non-string types."""
+            for key in keys:
+                value = result.get(key)
+                if value is not None:
+                    if not isinstance(value, str):
+                        try:
+                            return str(value)
+                        except Exception:
+                            continue
+                    return value
+            return default
+
+        def _create_candidate(result: Dict[str, Any], score: float = 0.5, source_type: str = "other") -> Optional[DataSourceCandidate]:
+            """Safely create a DataSourceCandidate from a result dict."""
+            try:
+                name = _safe_get_string(result, "name", "title", default="Unknown")
+                url = _safe_get_string(result, "url", default="")
+                description = _safe_get_string(result, "description", "content", default="")
+
+                # Safely truncate description
+                if description and len(description) > 500:
+                    description = description[:500]
+
+                return DataSourceCandidate(
+                    name=name,
+                    url=url,
+                    description=description,
+                    source_type=source_type,
+                    relevance_score=float(score),
+                )
+            except Exception as e:
+                logger.warning(f"Failed to create candidate from result: {e}, result: {result}")
+                return None
+
         # Ask LLM to score results
         messages = [
             SystemMessage(content="""You are a data source evaluator. Given a list of potential
@@ -211,35 +279,36 @@ Score each source by relevance to the user's needs.""")
                 # Create scored candidates
                 candidates = []
                 for score_data in scores:
-                    idx = score_data.get("index", 0)
-                    if idx < len(results):
-                        result = results[idx]
-                        candidates.append(DataSourceCandidate(
-                            name=result.get("name", result.get("title", "Unknown")),
-                            url=result.get("url", ""),
-                            description=result.get("description", result.get("content", ""))[:500],
-                            source_type=score_data.get("source_type", "other"),
-                            relevance_score=float(score_data.get("score", 0.5)),
-                        ))
+                    try:
+                        idx = score_data.get("index", 0)
+                        if idx < len(results):
+                            result = results[idx]
+                            candidate = _create_candidate(
+                                result,
+                                score=score_data.get("score", 0.5),
+                                source_type=score_data.get("source_type", "other")
+                            )
+                            if candidate:
+                                candidates.append(candidate)
+                    except Exception as e:
+                        logger.warning(f"Failed to process scored result at index {idx}: {e}")
+                        continue
 
                 # Sort by score
                 candidates.sort(key=lambda x: x.relevance_score, reverse=True)
                 return candidates[:self.max_results]
 
         except Exception as e:
-            logger.warning(f"Failed to score results: {e}")
+            logger.warning(f"Failed to score results: {e}", exc_info=True)
 
         # Fallback: return results without scoring
-        return [
-            DataSourceCandidate(
-                name=r.get("name", r.get("title", "Unknown")),
-                url=r.get("url", ""),
-                description=r.get("description", r.get("content", ""))[:500],
-                source_type=r.get("source_type", "other"),
-                relevance_score=0.5,
-            )
-            for r in results[:self.max_results]
-        ]
+        candidates = []
+        for r in results[:self.max_results]:
+            candidate = _create_candidate(r)
+            if candidate:
+                candidates.append(candidate)
+
+        return candidates
 
     def run(self, state: DiscoveryState) -> DiscoveryState:
         """
@@ -254,7 +323,22 @@ Score each source by relevance to the user's needs.""")
         logger.info("Search Agent: Starting data source search")
 
         try:
-            user_description = state["user_description"]
+            user_description = state.get("user_description")
+
+            # Validate user_description
+            if not user_description or not isinstance(user_description, str) or not user_description.strip():
+                logger.error("Invalid or missing user_description in state")
+                state["error"] = WorkflowError(
+                    agent_name="SearchAgent",
+                    step="search",
+                    issue="Missing or invalid user description",
+                    details="user_description is required and must be a non-empty string",
+                    recoverable=False,
+                ).to_dict()
+                state["interrupted"] = True
+                return state
+
+            user_description = user_description.strip()
 
             # Check if user already decided about existing sources
             use_existing = state.get("use_existing_source")
@@ -321,15 +405,24 @@ Score each source by relevance to the user's needs.""")
 
             # Generate search queries
             queries = self._generate_search_queries(user_description)
+            if not queries:
+                logger.warning("No search queries generated, using fallback")
+                queries = [user_description]
+
             logger.info(f"Search Agent: Generated {len(queries)} search queries")
 
             # Search using Tavily
             for query in queries:
                 try:
+                    if not query or not isinstance(query, str):
+                        logger.warning(f"Invalid query skipped: {query}")
+                        continue
+
                     web_results = web_search.invoke(query)
-                    if web_results:
+                    if web_results and isinstance(web_results, list):
                         for result in web_results:
-                            result["source"] = "web_search"
+                            if isinstance(result, dict):
+                                result["source"] = "web_search"
                         all_results.extend(web_results)
                         logger.info(f"Search Agent: Found {len(web_results)} web results for '{query}'")
                 except Exception as e:
@@ -338,9 +431,10 @@ Score each source by relevance to the user's needs.""")
             # Search Data.gov
             try:
                 gov_results = search_data_gov.invoke(user_description)
-                if gov_results:
+                if gov_results and isinstance(gov_results, list):
                     for result in gov_results:
-                        result["source"] = "data_gov"
+                        if isinstance(result, dict):
+                            result["source"] = "data_gov"
                     all_results.extend(gov_results)
                     logger.info(f"Search Agent: Found {len(gov_results)} Data.gov results")
             except Exception as e:
@@ -348,13 +442,21 @@ Score each source by relevance to the user's needs.""")
 
             # Search APIs.guru
             try:
-                # Extract key terms for API search
-                api_results = search_apis_guru.invoke(user_description.split()[0])
-                if api_results:
-                    for result in api_results:
-                        result["source"] = "apis_guru"
-                    all_results.extend(api_results)
-                    logger.info(f"Search Agent: Found {len(api_results)} APIs.guru results")
+                # Extract key terms for API search - handle empty descriptions
+                search_term = user_description
+                if user_description:
+                    words = user_description.split()
+                    if words:
+                        search_term = words[0]
+
+                if search_term:
+                    api_results = search_apis_guru.invoke(search_term)
+                    if api_results and isinstance(api_results, list):
+                        for result in api_results:
+                            if isinstance(result, dict):
+                                result["source"] = "apis_guru"
+                        all_results.extend(api_results)
+                        logger.info(f"Search Agent: Found {len(api_results)} APIs.guru results")
             except Exception as e:
                 logger.warning(f"APIs.guru search failed: {e}")
 
