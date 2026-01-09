@@ -58,6 +58,7 @@ class ExaminedSource:
     has_api: bool = False
     has_web_service: bool = False
     has_download: bool = False
+    has_contact_required: bool = False
     provides_desired_data: bool = False
     api_url: Optional[str] = None
     documentation_url: Optional[str] = None
@@ -66,13 +67,15 @@ class ExaminedSource:
 
     @property
     def best_access_method(self) -> AccessMethod:
-        """Determine the best available access method (priority: API > Web Service > Download)."""
+        """Determine the best available access method (priority: API > Web Service > Download > Contact Required)."""
         if self.has_api:
             return AccessMethod.API
         elif self.has_web_service:
             return AccessMethod.WEB_SERVICE
         elif self.has_download:
             return AccessMethod.DOWNLOAD
+        elif self.has_contact_required:
+            return AccessMethod.CONTACT_REQUIRED
         return AccessMethod.UNKNOWN
 
     def to_dict(self) -> Dict[str, Any]:

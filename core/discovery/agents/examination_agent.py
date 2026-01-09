@@ -60,6 +60,7 @@ class ExaminationAgent:
                 has_api=False,
                 has_web_service=False,
                 has_download=False,
+                has_contact_required=False,
                 provides_desired_data=False,
                 access_notes=f"Failed to access: {page_data['error']}",
             )
@@ -116,6 +117,7 @@ Based on this information, provide your analysis as JSON."""),
                     has_api=analysis.get("has_api", access_methods["has_api"]) or api_check.get("has_api", False),
                     has_web_service=analysis.get("has_web_service", access_methods["has_web_service"]),
                     has_download=analysis.get("has_download", access_methods["has_download"]),
+                    has_contact_required=analysis.get("has_contact_required", False),
                     provides_desired_data=analysis.get("provides_desired_data", False),
                     api_url=analysis.get("api_url") or api_check.get("api_urls", [None])[0] if api_check.get("api_urls") else None,
                     documentation_url=analysis.get("documentation_url") or doc_url,
@@ -131,6 +133,7 @@ Based on this information, provide your analysis as JSON."""),
             has_api=access_methods["has_api"] or api_check.get("has_api", False),
             has_web_service=access_methods["has_web_service"],
             has_download=access_methods["has_download"],
+            has_contact_required=False,  # Default to false in fallback case
             provides_desired_data=True,  # Assume true if we can't determine
             api_url=api_check.get("api_urls", [None])[0] if api_check.get("api_urls") else None,
             documentation_url=doc_url,
