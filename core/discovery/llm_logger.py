@@ -11,6 +11,12 @@ from typing import Any, List, Optional
 
 from langchain_core.messages import BaseMessage
 
+try:
+    from anthropic import BadRequestError
+except ImportError:
+    # Fallback if anthropic is not installed
+    BadRequestError = Exception
+
 logger = logging.getLogger(__name__)
 
 
@@ -96,8 +102,38 @@ def invoke_llm_with_logging(
     # Track timing
     start_time = time.time()
 
-    # Invoke the LLM
-    response = llm.invoke(messages)
+    try:
+        # Invoke the LLM
+        response = llm.invoke(messages)
+    except BadRequestError as e:
+        # Handle Anthropic API errors, especially content filtering
+        error_message = str(e)
+
+        if "content filtering" in error_message.lower():
+            logger.error(
+                f"[{agent_name}]{op_desc} Content Filtering Error:\n"
+                f"  The LLM response was blocked by Anthropic's content filtering policy.\n"
+                f"  This may be due to:\n"
+                f"  - Sensitive content in the documentation being analyzed\n"
+                f"  - Potentially harmful patterns in the API response examples\n"
+                f"  - Personal information or credentials in the source material\n"
+                f"  Error: {error_message}"
+            )
+            # Re-raise with a more informative message
+            raise ValueError(
+                f"Content filtering blocked the response for {agent_name}. "
+                f"The source documentation may contain sensitive content that triggers "
+                f"Anthropic's safety policies. Consider reviewing the source material "
+                f"or contact support if this is unexpected."
+            ) from e
+        else:
+            # For other BadRequestErrors, log and re-raise
+            logger.error(f"[{agent_name}]{op_desc} API Error: {error_message}")
+            raise
+    except Exception as e:
+        # Log any other unexpected errors
+        logger.error(f"[{agent_name}]{op_desc} Unexpected error during LLM invocation: {e}", exc_info=True)
+        raise
 
     # Calculate elapsed time
     elapsed_ms = (time.time() - start_time) * 1000
