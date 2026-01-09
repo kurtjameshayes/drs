@@ -12,6 +12,8 @@ class Config:
     CACHE_ENABLED = os.getenv("CACHE_ENABLED", "false").lower() == "true"
     API_HOST = os.getenv("API_HOST", "0.0.0.0")
     API_PORT = int(os.getenv("API_PORT", 5000))
+    DEBUG = os.getenv("DEBUG", "false").lower() == "true"
+    WERKZEUG_DEBUG_PIN = os.getenv("WERKZEUG_DEBUG_PIN", "off")
     MAX_RETRIES = int(os.getenv("MAX_RETRIES", 3))
     RETRY_BACKOFF_FACTOR = float(os.getenv("RETRY_BACKOFF_FACTOR", 2.0))
 
