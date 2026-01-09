@@ -117,6 +117,29 @@ class DocumentationAgent:
 
         return content
 
+    def _safe_access_method(self, access_method_str: str) -> AccessMethod:
+        """
+        Safely convert a string to an AccessMethod enum.
+
+        Args:
+            access_method_str: String representation of access method
+
+        Returns:
+            AccessMethod enum value, defaults to UNKNOWN if invalid
+        """
+        if not access_method_str:
+            return AccessMethod.UNKNOWN
+
+        # Normalize the string to lowercase and handle potential variations
+        normalized = access_method_str.lower().strip()
+
+        # Try direct mapping
+        try:
+            return AccessMethod(normalized)
+        except ValueError:
+            logger.warning(f"Invalid access method '{access_method_str}', defaulting to UNKNOWN")
+            return AccessMethod.UNKNOWN
+
     def _extract_documentation(
         self,
         selected_source: Dict[str, Any],
@@ -125,7 +148,7 @@ class DocumentationAgent:
     ) -> AccessDocumentation:
         """Use LLM to extract structured documentation."""
         candidate = selected_source.get("candidate", {})
-        access_method = selected_source.get("best_access_method", "api")
+        access_method_str = selected_source.get("best_access_method", "api")
 
         # Build context for LLM
         context_parts = []
@@ -150,7 +173,7 @@ class DocumentationAgent:
                 source_name=candidate.get("name", "Unknown"),
                 source_url=candidate.get("url", ""),
                 documentation_url=selected_source.get("documentation_url") or selected_source.get("api_url") or candidate.get("url", ""),
-                access_method=access_method,
+                access_method=access_method_str,
                 user_description=user_description,
             )),
             HumanMessage(content=f"Here is the documentation content I found:\n\n{documentation_context}"),
@@ -203,10 +226,15 @@ class DocumentationAgent:
                         example_response=ep_data.get("example_response", ""),
                     ))
 
+                # Safely convert access_method string to enum
+                access_method = self._safe_access_method(
+                    doc_data.get("access_method", access_method_str)
+                )
+
                 return AccessDocumentation(
                     source_name=candidate.get("name", "Unknown"),
                     base_url=doc_data.get("base_url", candidate.get("url", "")),
-                    access_method=AccessMethod(doc_data.get("access_method", access_method)),
+                    access_method=access_method,
                     authentication=authentication,
                     endpoints=endpoints,
                     rate_limits=doc_data.get("rate_limits", {}),
