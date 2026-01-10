@@ -5,9 +5,11 @@ This module provides utilities for logging LLM prompts and responses,
 enabling visibility into agent-LLM interactions for debugging and monitoring.
 """
 
+import json
 import logging
 import time
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional, Union
+from functools import wraps
 
 from langchain_core.messages import BaseMessage
 
@@ -18,6 +20,283 @@ except ImportError:
     BadRequestError = Exception
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Comprehensive Logging Utilities for Agent Steps
+# =============================================================================
+
+class AgentLogger:
+    """
+    Comprehensive logging utility for agent operations.
+
+    Provides structured logging at each step showing:
+    - Input variables
+    - Prompts being sent to LLM
+    - LLM reasoning/response
+    - Results and outcomes
+    """
+
+    def __init__(self, agent_name: str, log_level: int = logging.INFO):
+        """
+        Initialize the agent logger.
+
+        Args:
+            agent_name: Name of the agent (e.g., "APIKeyAgent")
+            log_level: Default logging level for step logs
+        """
+        self.agent_name = agent_name
+        self.log_level = log_level
+        self.step_counter = 0
+        self._logger = logging.getLogger(f"{__name__}.{agent_name}")
+
+    def _format_value(self, value: Any, max_length: int = 500) -> str:
+        """Format a value for logging, truncating if needed."""
+        if value is None:
+            return "None"
+        if isinstance(value, dict):
+            try:
+                formatted = json.dumps(value, indent=2, default=str)
+            except (TypeError, ValueError):
+                formatted = str(value)
+        elif isinstance(value, (list, tuple)):
+            try:
+                formatted = json.dumps(value, indent=2, default=str)
+            except (TypeError, ValueError):
+                formatted = str(value)
+        else:
+            formatted = str(value)
+
+        if len(formatted) > max_length:
+            return formatted[:max_length] + f"... [truncated, {len(formatted)} chars total]"
+        return formatted
+
+    def _format_variables(self, variables: Dict[str, Any], indent: str = "    ") -> str:
+        """Format a dict of variables for logging."""
+        if not variables:
+            return f"{indent}(none)"
+
+        lines = []
+        for key, value in variables.items():
+            formatted_value = self._format_value(value)
+            # Handle multi-line values
+            if "\n" in formatted_value:
+                lines.append(f"{indent}{key}:")
+                for line in formatted_value.split("\n"):
+                    lines.append(f"{indent}  {line}")
+            else:
+                lines.append(f"{indent}{key}: {formatted_value}")
+        return "\n".join(lines)
+
+    def log_step_start(
+        self,
+        step_name: str,
+        step_description: str,
+        variables: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        """
+        Log the start of an agent step with input variables.
+
+        Args:
+            step_name: Short identifier for the step (e.g., "discover_site")
+            step_description: Human-readable description of what this step does
+            variables: Dictionary of input variables to log
+
+        Returns:
+            Step number for reference in subsequent logs
+        """
+        self.step_counter += 1
+        step_num = self.step_counter
+
+        divider = "=" * 70
+        self._logger.log(
+            self.log_level,
+            f"\n{divider}\n"
+            f"[{self.agent_name}] STEP {step_num}: {step_name}\n"
+            f"{divider}\n"
+            f"Description: {step_description}\n"
+            f"Input Variables:\n{self._format_variables(variables or {})}"
+        )
+
+        return step_num
+
+    def log_prompt(
+        self,
+        step_num: int,
+        operation: str,
+        prompt: str,
+        additional_context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        Log the prompt being sent to the LLM.
+
+        Args:
+            step_num: Step number from log_step_start
+            operation: Name of the LLM operation
+            prompt: The full prompt text
+            additional_context: Any additional context being provided
+        """
+        context_str = ""
+        if additional_context:
+            context_str = f"\nAdditional Context:\n{self._format_variables(additional_context)}"
+
+        prompt_preview = prompt if len(prompt) <= 2000 else prompt[:2000] + f"... [truncated, {len(prompt)} chars total]"
+
+        self._logger.log(
+            self.log_level,
+            f"\n[{self.agent_name}] Step {step_num} - LLM Prompt ({operation}):\n"
+            f"{'─' * 50}\n"
+            f"{prompt_preview}"
+            f"{context_str}\n"
+            f"{'─' * 50}"
+        )
+
+    def log_llm_response(
+        self,
+        step_num: int,
+        operation: str,
+        response_content: str,
+        parsed_result: Optional[Any] = None,
+        elapsed_ms: Optional[float] = None,
+    ) -> None:
+        """
+        Log the LLM response and reasoning.
+
+        Args:
+            step_num: Step number from log_step_start
+            operation: Name of the LLM operation
+            response_content: Raw response content from LLM
+            parsed_result: Parsed/structured result if applicable
+            elapsed_ms: Time taken for LLM call in milliseconds
+        """
+        time_str = f" ({elapsed_ms:.0f}ms)" if elapsed_ms else ""
+
+        response_preview = response_content if len(response_content) <= 2000 else response_content[:2000] + f"... [truncated, {len(response_content)} chars total]"
+
+        parsed_str = ""
+        if parsed_result is not None:
+            parsed_str = f"\nParsed Result:\n{self._format_variables({'result': parsed_result})}"
+
+        self._logger.log(
+            self.log_level,
+            f"\n[{self.agent_name}] Step {step_num} - LLM Response ({operation}){time_str}:\n"
+            f"{'─' * 50}\n"
+            f"Raw Response:\n{response_preview}"
+            f"{parsed_str}\n"
+            f"{'─' * 50}"
+        )
+
+    def log_step_result(
+        self,
+        step_num: int,
+        step_name: str,
+        success: bool,
+        result: Optional[Dict[str, Any]] = None,
+        error: Optional[str] = None,
+    ) -> None:
+        """
+        Log the result/outcome of a step.
+
+        Args:
+            step_num: Step number from log_step_start
+            step_name: Name of the step
+            success: Whether the step succeeded
+            result: Result data if successful
+            error: Error message if failed
+        """
+        status = "✓ SUCCESS" if success else "✗ FAILED"
+
+        result_str = ""
+        if result:
+            result_str = f"\nResult:\n{self._format_variables(result)}"
+
+        error_str = ""
+        if error:
+            error_str = f"\nError: {error}"
+
+        self._logger.log(
+            self.log_level,
+            f"\n[{self.agent_name}] Step {step_num} ({step_name}) - {status}"
+            f"{result_str}"
+            f"{error_str}\n"
+            f"{'=' * 70}"
+        )
+
+    def log_decision(
+        self,
+        step_num: int,
+        decision_point: str,
+        condition: str,
+        result: bool,
+        action: str,
+    ) -> None:
+        """
+        Log a decision point in the agent logic.
+
+        Args:
+            step_num: Step number from log_step_start
+            decision_point: Name of the decision point
+            condition: The condition being evaluated
+            result: Result of the condition (True/False)
+            action: Action being taken based on the decision
+        """
+        self._logger.log(
+            self.log_level,
+            f"[{self.agent_name}] Step {step_num} - Decision: {decision_point}\n"
+            f"    Condition: {condition}\n"
+            f"    Evaluation: {result}\n"
+            f"    Action: {action}"
+        )
+
+    def log_substep(
+        self,
+        step_num: int,
+        substep: str,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        Log a substep within a larger step.
+
+        Args:
+            step_num: Parent step number
+            substep: Description of the substep
+            details: Optional details about the substep
+        """
+        details_str = ""
+        if details:
+            details_str = f"\n{self._format_variables(details)}"
+
+        self._logger.log(
+            self.log_level,
+            f"[{self.agent_name}] Step {step_num} - Substep: {substep}{details_str}"
+        )
+
+    def log_info(self, message: str, **kwargs: Any) -> None:
+        """Log an info message with optional key-value pairs."""
+        if kwargs:
+            details = "\n" + self._format_variables(kwargs)
+        else:
+            details = ""
+        self._logger.info(f"[{self.agent_name}] {message}{details}")
+
+    def log_warning(self, message: str, **kwargs: Any) -> None:
+        """Log a warning message with optional key-value pairs."""
+        if kwargs:
+            details = "\n" + self._format_variables(kwargs)
+        else:
+            details = ""
+        self._logger.warning(f"[{self.agent_name}] {message}{details}")
+
+    def log_error(self, message: str, error: Optional[Exception] = None, **kwargs: Any) -> None:
+        """Log an error message with optional exception details."""
+        if kwargs:
+            details = "\n" + self._format_variables(kwargs)
+        else:
+            details = ""
+        if error:
+            self._logger.error(f"[{self.agent_name}] {message}{details}", exc_info=True)
+        else:
+            self._logger.error(f"[{self.agent_name}] {message}{details}")
 
 
 def format_messages_for_logging(messages: List[BaseMessage], max_length: int = 1000) -> str:

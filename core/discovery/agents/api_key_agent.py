@@ -25,10 +25,17 @@ from core.discovery.state import (
 from core.discovery.services.api_key_store import APIKeyStore
 from core.discovery.services.arcade_email_service import ArcadeEmailService
 from core.discovery.services.browser_automation_service import BrowserAutomationService
-from core.discovery.llm_logger import invoke_llm_with_logging
+from core.discovery.llm_logger import invoke_llm_with_logging, AgentLogger
 from config import Config
 
 logger = logging.getLogger(__name__)
+
+# Mask sensitive data for logging
+def _mask_sensitive(value: str, visible_chars: int = 4) -> str:
+    """Mask sensitive values like passwords and API keys for logging."""
+    if not value or len(value) <= visible_chars * 2:
+        return "***"
+    return value[:visible_chars] + "*" * (len(value) - visible_chars * 2) + value[-visible_chars:]
 
 
 # Browser automation function descriptions for the LLM
@@ -68,6 +75,9 @@ class APIKeyAgent:
         self.key_store = APIKeyStore(db_client)
         self.browser_service = None
 
+        # Initialize comprehensive logging
+        self.agent_logger = AgentLogger("APIKeyAgent", log_level=logging.INFO)
+
         # Get user email from environment
         self.user_email = os.environ.get("ARCADE_USER_ID", "") or Config.DISCOVERY_EMAIL
 
@@ -77,9 +87,18 @@ class APIKeyAgent:
                 api_key=Config.ARCADE_API_KEY,
                 user_id=Config.ARCADE_USER_ID or Config.DISCOVERY_EMAIL,
             )
+            self.agent_logger.log_info(
+                "Initialized with email service",
+                email_user=self.user_email,
+                model=Config.DISCOVERY_LLM_MODEL,
+            )
         else:
             self.email_service = None
-            logger.warning("Arcade API not configured, email polling disabled")
+            self.agent_logger.log_warning(
+                "Arcade API not configured, email polling disabled",
+                arcade_api_key_set=bool(Config.ARCADE_API_KEY),
+                discovery_email_set=bool(Config.DISCOVERY_EMAIL),
+            )
 
     def _get_browser_service(self) -> BrowserAutomationService:
         """Get or create the browser automation service."""
@@ -108,6 +127,9 @@ class APIKeyAgent:
         Returns:
             Updated state with API key or error
         """
+        # Reset step counter for this run
+        self.agent_logger.step_counter = 0
+
         try:
             access_doc = state.get("access_documentation", {})
             source_name = access_doc.get("source_name", "Unknown")
@@ -115,33 +137,167 @@ class APIKeyAgent:
             auth_info = access_doc.get("authentication", {})
             registration_url = auth_info.get("registration_url", "")
 
-            logger.info(f"API Key Agent: Processing {source_name}")
+            # Log workflow entry
+            workflow_step = self.agent_logger.log_step_start(
+                step_name="run",
+                step_description="Main API key acquisition workflow entry point",
+                variables={
+                    "source_name": source_name,
+                    "base_url": base_url,
+                    "registration_url": registration_url,
+                    "auth_info": auth_info,
+                    "email_service_available": self.email_service is not None,
+                    "user_email": self.user_email,
+                },
+            )
 
             # Step 1: Check if we already have a key
+            step1 = self.agent_logger.log_step_start(
+                step_name="check_existing_key",
+                step_description="Check if we already have a valid API key stored for this source",
+                variables={
+                    "base_url": base_url,
+                    "source_name": source_name,
+                },
+            )
+
             existing_key = self._check_existing_key(base_url, source_name)
+
+            self.agent_logger.log_decision(
+                step_num=step1,
+                decision_point="existing_key_check",
+                condition="existing_key is not None",
+                result=existing_key is not None,
+                action="Use existing key" if existing_key else "Proceed to discover site",
+            )
+
             if existing_key:
-                logger.info(f"Using existing API key for {source_name}")
+                self.agent_logger.log_step_result(
+                    step_num=step1,
+                    step_name="check_existing_key",
+                    success=True,
+                    result={
+                        "key_found": True,
+                        "masked_key": _mask_sensitive(existing_key),
+                        "source": "existing",
+                    },
+                )
                 return self._apply_key_to_state(state, existing_key, "existing")
 
+            self.agent_logger.log_step_result(
+                step_num=step1,
+                step_name="check_existing_key",
+                success=True,
+                result={"key_found": False, "message": "No existing key found, proceeding to discovery"},
+            )
+
             # Step 2: Discover the site and analyze registration process
+            step2 = self.agent_logger.log_step_start(
+                step_name="discover_site",
+                step_description="Crawl and analyze the website to discover API key registration process",
+                variables={
+                    "url": registration_url or base_url,
+                    "using_registration_url": bool(registration_url),
+                },
+            )
+
             site_info = self.discover_site(registration_url or base_url)
 
+            self.agent_logger.log_step_result(
+                step_num=step2,
+                step_name="discover_site",
+                success="error" not in site_info,
+                result={
+                    "key_available_on_site": site_info.get("key_available_on_site"),
+                    "can_automate_registration": site_info.get("can_automate_registration"),
+                    "requires_email_verification": site_info.get("requires_email_verification"),
+                    "email_domain": site_info.get("email_domain"),
+                    "navigation_steps_count": len(site_info.get("navigation_steps", [])),
+                    "form_fields_count": len(site_info.get("form_fields", [])),
+                },
+                error=site_info.get("error"),
+            )
+
             # Step 3: Try to extract key directly from site (if publicly available)
+            self.agent_logger.log_decision(
+                step_num=step2,
+                decision_point="key_available_on_site",
+                condition="site_info.get('key_available_on_site') == True",
+                result=site_info.get("key_available_on_site", False),
+                action="Extract key from site" if site_info.get("key_available_on_site") else "Skip direct extraction",
+            )
+
             if site_info.get("key_available_on_site"):
+                step3 = self.agent_logger.log_step_start(
+                    step_name="extract_key_from_site",
+                    step_description="Attempt to extract API key directly from the site (for publicly available keys)",
+                    variables={
+                        "site_url": site_info.get("url"),
+                        "api_elements_found": bool(site_info.get("api_elements")),
+                    },
+                )
+
                 extracted_key = self.extract_key_from_site(site_info)
+
+                self.agent_logger.log_step_result(
+                    step_num=step3,
+                    step_name="extract_key_from_site",
+                    success=extracted_key is not None,
+                    result={
+                        "key_extracted": extracted_key is not None,
+                        "masked_key": _mask_sensitive(extracted_key) if extracted_key else None,
+                    },
+                )
+
                 if extracted_key:
                     self._store_key(base_url, extracted_key, {
                         "source_name": source_name,
                         "registration_url": registration_url,
                     })
+                    self.agent_logger.log_info(
+                        "Successfully acquired API key via direct extraction",
+                        source="automatic",
+                        masked_key=_mask_sensitive(extracted_key),
+                    )
                     return self._apply_key_to_state(state, extracted_key, "automatic")
 
             # Step 4: Try to request key via browser automation
+            self.agent_logger.log_decision(
+                step_num=step2,
+                decision_point="can_automate_registration",
+                condition="site_info.get('can_automate_registration') == True",
+                result=site_info.get("can_automate_registration", False),
+                action="Automate registration" if site_info.get("can_automate_registration") else "Skip automation",
+            )
+
             if site_info.get("can_automate_registration", False):
+                step4 = self.agent_logger.log_step_start(
+                    step_name="request_key",
+                    step_description="Request API key via automated form submission",
+                    variables={
+                        "email": self.user_email,
+                        "source_name": source_name,
+                        "registration_url": site_info.get("registration_url") or site_info.get("url"),
+                    },
+                )
+
                 request_result = self.request_key(
                     site_info=site_info,
                     email=self.user_email,
                     source_name=source_name,
+                )
+
+                self.agent_logger.log_step_result(
+                    step_num=step4,
+                    step_name="request_key",
+                    success=request_result.get("success", False),
+                    result={
+                        "key_received": request_result.get("key") is not None,
+                        "masked_key": _mask_sensitive(request_result.get("key")) if request_result.get("key") else None,
+                        "email_verification_pending": request_result.get("email_verification_pending"),
+                        "verification_message": request_result.get("verification_message"),
+                    },
+                    error=request_result.get("error"),
                 )
 
                 if request_result.get("key"):
@@ -150,10 +306,19 @@ class APIKeyAgent:
                         "source_name": source_name,
                         "registration_url": registration_url,
                     })
+                    self.agent_logger.log_info(
+                        "Successfully acquired API key via automated registration",
+                        source="automatic",
+                        masked_key=_mask_sensitive(request_result["key"]),
+                    )
                     return self._apply_key_to_state(state, request_result["key"], "automatic")
 
                 if request_result.get("email_verification_pending"):
                     # Need to check email for verification or key
+                    self.agent_logger.log_info(
+                        "Email verification pending, proceeding to email handling",
+                        verification_message=request_result.get("verification_message"),
+                    )
                     return asyncio.run(self._handle_email_verification(
                         state=state,
                         site_info=site_info,
@@ -163,8 +328,25 @@ class APIKeyAgent:
                     ))
 
             # Step 5: Check if we can poll email for key
+            self.agent_logger.log_decision(
+                step_num=workflow_step,
+                decision_point="email_polling",
+                condition="self.email_service and site_info.get('email_domain')",
+                result=bool(self.email_service and site_info.get("email_domain")),
+                action="Poll email for key" if (self.email_service and site_info.get("email_domain")) else "Skip email polling",
+            )
+
             if self.email_service and site_info.get("email_domain"):
-                return asyncio.run(self._poll_email_only(state, {
+                step5 = self.agent_logger.log_step_start(
+                    step_name="poll_email_only",
+                    step_description="Poll email inbox for API key (assuming registration was done elsewhere)",
+                    variables={
+                        "email_domain": site_info.get("email_domain"),
+                        "subject_keywords": site_info.get("subject_keywords", ["API Key", "API", "Token"]),
+                    },
+                )
+
+                result = asyncio.run(self._poll_email_only(state, {
                     "email_domain": site_info.get("email_domain"),
                     "subject_keywords": site_info.get("subject_keywords", ["API Key", "API", "Token"]),
                     "base_url": base_url,
@@ -172,7 +354,38 @@ class APIKeyAgent:
                     "registration_url": registration_url,
                 }))
 
+                self.agent_logger.log_step_result(
+                    step_num=step5,
+                    step_name="poll_email_only",
+                    success=result.get("api_key_acquired", False),
+                    result={
+                        "api_key_acquired": result.get("api_key_acquired", False),
+                        "waiting_for_human_input": result.get("waiting_for_human_input", False),
+                    },
+                )
+
+                return result
+
             # Step 6: Fall back to manual intervention
+            step6 = self.agent_logger.log_step_start(
+                step_name="manual_intervention",
+                step_description="Request manual API key input as automation could not complete",
+                variables={
+                    "reason": "automation_failed",
+                    "registration_url": registration_url,
+                },
+            )
+
+            self.agent_logger.log_step_result(
+                step_num=step6,
+                step_name="manual_intervention",
+                success=True,
+                result={
+                    "action": "Requesting manual intervention",
+                    "message": f"Could not automatically acquire API key for {source_name}",
+                },
+            )
+
             return self._request_manual_intervention(
                 state,
                 {
@@ -185,7 +398,11 @@ class APIKeyAgent:
             )
 
         except Exception as e:
-            logger.error(f"API Key Agent failed: {e}", exc_info=True)
+            self.agent_logger.log_error(
+                f"API Key Agent failed with exception: {type(e).__name__}",
+                error=e,
+                exception_message=str(e),
+            )
             state["error"] = WorkflowError(
                 agent_name="APIKeyAgent",
                 step="api_key_acquisition",
@@ -198,6 +415,7 @@ class APIKeyAgent:
         finally:
             # Clean up browser
             self._close_browser()
+            self.agent_logger.log_info("Browser cleanup completed")
 
         return state
 
@@ -214,10 +432,20 @@ class APIKeyAgent:
         Returns:
             Site information dict with registration details
         """
-        if not url:
-            return {"error": "No URL provided"}
+        step_num = self.agent_logger.log_step_start(
+            step_name="discover_site",
+            step_description="Crawl website to discover API key registration process",
+            variables={"url": url},
+        )
 
-        logger.info(f"Discovering site: {url}")
+        if not url:
+            self.agent_logger.log_step_result(
+                step_num=step_num,
+                step_name="discover_site",
+                success=False,
+                error="No URL provided",
+            )
+            return {"error": "No URL provided"}
 
         browser = self._get_browser_service()
         site_info = {
@@ -234,17 +462,44 @@ class APIKeyAgent:
 
         try:
             # Navigate to the site
+            self.agent_logger.log_substep(step_num, "Navigating to URL", {"url": url})
             nav_result = browser.navigate_to_url(url)
+
+            self.agent_logger.log_substep(
+                step_num,
+                "Navigation result",
+                {"success": nav_result.get("success"), "current_url": nav_result.get("url")},
+            )
+
             if not nav_result.get("success"):
-                logger.error(f"Failed to navigate to {url}")
+                self.agent_logger.log_step_result(
+                    step_num=step_num,
+                    step_name="discover_site",
+                    success=False,
+                    error=f"Failed to navigate to {url}",
+                )
                 return site_info
 
             # Get initial page content
+            self.agent_logger.log_substep(step_num, "Getting page content and API elements")
             content = browser.get_page_content()
             links = browser.get_links()
             api_elements = browser.find_api_key_elements()
 
+            self.agent_logger.log_substep(
+                step_num,
+                "Page content retrieved",
+                {
+                    "page_title": content.get("title"),
+                    "visible_text_length": len(content.get("visible_text", "")),
+                    "links_count": links.get("count", 0),
+                    "api_key_displays_found": len(api_elements.get("api_key_displays", [])),
+                    "generate_buttons_found": len(api_elements.get("generate_buttons", [])),
+                },
+            )
+
             # Use LLM to analyze the page and decide next steps
+            self.agent_logger.log_substep(step_num, "Invoking LLM to analyze page for API key")
             analysis = self._analyze_page_for_api_key(
                 url=url,
                 content=content,
@@ -252,10 +507,36 @@ class APIKeyAgent:
                 api_elements=api_elements,
             )
 
+            self.agent_logger.log_substep(
+                step_num,
+                "Page analysis complete",
+                {
+                    "key_available_on_site": analysis.get("key_available_on_site"),
+                    "can_automate_registration": analysis.get("can_automate_registration"),
+                    "needs_navigation": analysis.get("needs_navigation"),
+                    "registration_url": analysis.get("registration_url"),
+                    "notes": analysis.get("notes"),
+                },
+            )
+
             site_info.update(analysis)
 
             # If we need to navigate to find API registration, use LLM-driven navigation
+            self.agent_logger.log_decision(
+                step_num=step_num,
+                decision_point="needs_navigation",
+                condition="analysis.get('needs_navigation') == True",
+                result=analysis.get("needs_navigation", False),
+                action="Start LLM-driven navigation" if analysis.get("needs_navigation") else "Skip navigation",
+            )
+
             if analysis.get("needs_navigation"):
+                self.agent_logger.log_substep(
+                    step_num,
+                    "Starting LLM-driven navigation to find registration page",
+                    {"goal": "Find the API key registration or generation page", "max_steps": 5},
+                )
+
                 nav_steps = self._llm_driven_navigation(
                     browser=browser,
                     goal="Find the API key registration or generation page",
@@ -263,7 +544,14 @@ class APIKeyAgent:
                 )
                 site_info["navigation_steps"] = nav_steps
 
+                self.agent_logger.log_substep(
+                    step_num,
+                    "LLM-driven navigation complete",
+                    {"steps_taken": len(nav_steps), "navigation_steps": nav_steps},
+                )
+
                 # Re-analyze after navigation
+                self.agent_logger.log_substep(step_num, "Re-analyzing page after navigation")
                 content = browser.get_page_content()
                 api_elements = browser.find_api_key_elements()
                 form_fields = browser.find_form_fields()
@@ -273,6 +561,18 @@ class APIKeyAgent:
                     api_elements=api_elements,
                     form_fields=form_fields,
                 )
+
+                self.agent_logger.log_substep(
+                    step_num,
+                    "Final registration page analysis",
+                    {
+                        "can_automate_registration": final_analysis.get("can_automate_registration"),
+                        "has_captcha": final_analysis.get("has_captcha"),
+                        "required_fields": final_analysis.get("required_fields"),
+                        "requires_email_verification": final_analysis.get("requires_email_verification"),
+                    },
+                )
+
                 site_info.update(final_analysis)
 
             # Extract email domain from URL
@@ -280,11 +580,27 @@ class APIKeyAgent:
             parsed = urlparse(url)
             site_info["email_domain"] = parsed.netloc.replace("www.", "").replace("api.", "")
 
-            logger.info(f"Site discovery complete: {site_info}")
+            self.agent_logger.log_step_result(
+                step_num=step_num,
+                step_name="discover_site",
+                success=True,
+                result={
+                    "key_available_on_site": site_info.get("key_available_on_site"),
+                    "can_automate_registration": site_info.get("can_automate_registration"),
+                    "requires_email_verification": site_info.get("requires_email_verification"),
+                    "email_domain": site_info.get("email_domain"),
+                    "navigation_steps_count": len(site_info.get("navigation_steps", [])),
+                },
+            )
+
             return site_info
 
         except Exception as e:
-            logger.error(f"Error discovering site: {e}", exc_info=True)
+            self.agent_logger.log_error(
+                f"Error during site discovery: {type(e).__name__}",
+                error=e,
+                url=url,
+            )
             site_info["error"] = str(e)
             return site_info
 
@@ -301,31 +617,83 @@ class APIKeyAgent:
         Returns:
             API key if found, None otherwise
         """
+        step_num = self.agent_logger.log_step_start(
+            step_name="extract_key_from_site",
+            step_description="Attempt to extract API key directly from the site (for demo/public keys)",
+            variables={
+                "site_url": site_info.get("url"),
+                "key_available_on_site": site_info.get("key_available_on_site"),
+            },
+        )
+
         browser = self._get_browser_service()
 
         try:
             # Check for API key elements on the current page
+            self.agent_logger.log_substep(step_num, "Searching for API key elements on page")
             api_elements = browser.find_api_key_elements()
+
+            self.agent_logger.log_substep(
+                step_num,
+                "API elements found",
+                {
+                    "api_key_displays_count": len(api_elements.get("api_key_displays", [])),
+                    "generate_buttons_count": len(api_elements.get("generate_buttons", [])),
+                },
+            )
 
             if api_elements.get("api_key_displays"):
                 # Found potential API keys displayed on the page
-                for display in api_elements["api_key_displays"]:
+                self.agent_logger.log_substep(
+                    step_num,
+                    "Found potential API key displays, validating each",
+                    {"count": len(api_elements["api_key_displays"])},
+                )
+
+                for i, display in enumerate(api_elements["api_key_displays"]):
                     key_text = display.get("text", "")
+
+                    self.agent_logger.log_substep(
+                        step_num,
+                        f"Validating potential key {i+1}",
+                        {"masked_key_text": _mask_sensitive(key_text), "length": len(key_text)},
+                    )
 
                     # Use LLM to validate this is actually an API key
                     if self._validate_api_key(key_text):
-                        logger.info("Extracted API key directly from site")
+                        self.agent_logger.log_step_result(
+                            step_num=step_num,
+                            step_name="extract_key_from_site",
+                            success=True,
+                            result={
+                                "extraction_method": "direct_display",
+                                "masked_key": _mask_sensitive(key_text),
+                            },
+                        )
                         return key_text
 
             # Try clicking generate buttons if they exist
             if api_elements.get("generate_buttons"):
+                self.agent_logger.log_substep(
+                    step_num,
+                    "Trying to click generate buttons",
+                    {"buttons": [b.get("text") for b in api_elements["generate_buttons"]]},
+                )
+
                 for button in api_elements["generate_buttons"]:
                     button_text = button.get("text", "")
+
+                    self.agent_logger.log_substep(
+                        step_num,
+                        f"Clicking generate button: '{button_text}'",
+                    )
+
                     result = browser.click_element(button_text)
 
                     if result.get("success"):
                         # Wait for key to be generated
                         import time
+                        self.agent_logger.log_substep(step_num, "Button clicked, waiting for key generation")
                         time.sleep(2)
 
                         # Check for newly displayed key
@@ -334,13 +702,31 @@ class APIKeyAgent:
                             for display in new_elements["api_key_displays"]:
                                 key_text = display.get("text", "")
                                 if self._validate_api_key(key_text):
-                                    logger.info("Generated and extracted API key from site")
+                                    self.agent_logger.log_step_result(
+                                        step_num=step_num,
+                                        step_name="extract_key_from_site",
+                                        success=True,
+                                        result={
+                                            "extraction_method": "generate_button",
+                                            "button_text": button_text,
+                                            "masked_key": _mask_sensitive(key_text),
+                                        },
+                                    )
                                     return key_text
 
+            self.agent_logger.log_step_result(
+                step_num=step_num,
+                step_name="extract_key_from_site",
+                success=False,
+                result={"message": "No valid API key found on site"},
+            )
             return None
 
         except Exception as e:
-            logger.error(f"Error extracting key from site: {e}")
+            self.agent_logger.log_error(
+                f"Error extracting key from site: {type(e).__name__}",
+                error=e,
+            )
             return None
 
     def request_key(
@@ -363,6 +749,17 @@ class APIKeyAgent:
         Returns:
             Result dict with key if immediately available, or status
         """
+        step_num = self.agent_logger.log_step_start(
+            step_name="request_key",
+            step_description="Request API key via automated form submission",
+            variables={
+                "source_name": source_name,
+                "email": email,
+                "registration_url": site_info.get("registration_url") or site_info.get("url"),
+                "form_fields_expected": site_info.get("form_fields"),
+            },
+        )
+
         browser = self._get_browser_service()
         result = {
             "success": False,
@@ -375,19 +772,39 @@ class APIKeyAgent:
             # Navigate to registration URL if different from current
             reg_url = site_info.get("registration_url") or site_info.get("url")
             if reg_url:
+                self.agent_logger.log_substep(step_num, "Navigating to registration URL", {"url": reg_url})
                 browser.navigate_to_url(reg_url)
 
             # Get form fields
+            self.agent_logger.log_substep(step_num, "Finding form fields on registration page")
             form_fields = browser.find_form_fields()
+
+            self.agent_logger.log_substep(
+                step_num,
+                "Form fields found",
+                {"fields_count": len(form_fields.get("fields", [])), "fields": form_fields.get("fields", [])},
+            )
 
             if not form_fields.get("fields"):
                 result["error"] = "No form fields found on registration page"
+                self.agent_logger.log_step_result(
+                    step_num=step_num,
+                    step_name="request_key",
+                    success=False,
+                    error=result["error"],
+                )
                 return result
 
             # Generate a secure password if needed
             password = self._generate_secure_password()
+            self.agent_logger.log_substep(
+                step_num,
+                "Generated secure password for registration",
+                {"password_length": len(password)},
+            )
 
             # Use LLM to determine how to fill the form
+            self.agent_logger.log_substep(step_num, "Using LLM to determine form fill instructions")
             fill_instructions = self._get_form_fill_instructions(
                 form_fields=form_fields.get("fields", []),
                 email=email,
@@ -395,55 +812,153 @@ class APIKeyAgent:
                 source_name=source_name,
             )
 
+            self.agent_logger.log_substep(
+                step_num,
+                "Form fill instructions received from LLM",
+                {
+                    "instructions_count": len(fill_instructions),
+                    "fields_to_fill": [
+                        {
+                            "selector": inst.get("selector"),
+                            "value_type": "password" if "password" in inst.get("selector", "").lower()
+                            else "email" if "email" in inst.get("selector", "").lower()
+                            else "other",
+                        }
+                        for inst in fill_instructions
+                    ],
+                },
+            )
+
             # Fill in the form fields
-            for instruction in fill_instructions:
+            self.agent_logger.log_substep(step_num, "Filling form fields")
+            for i, instruction in enumerate(fill_instructions):
                 field_selector = instruction.get("selector")
                 field_value = instruction.get("value")
 
                 if field_selector and field_value:
+                    # Mask sensitive values in logs
+                    is_sensitive = any(s in field_selector.lower() for s in ["password", "key", "secret", "token"])
+                    logged_value = _mask_sensitive(field_value) if is_sensitive else field_value
+
+                    self.agent_logger.log_substep(
+                        step_num,
+                        f"Filling field {i+1}/{len(fill_instructions)}",
+                        {"selector": field_selector, "value": logged_value},
+                    )
                     browser.fill_form_field(field_selector, field_value)
 
             # Submit the form
+            self.agent_logger.log_substep(step_num, "Submitting registration form")
             submit_result = browser.submit_form()
+
+            self.agent_logger.log_substep(
+                step_num,
+                "Form submission result",
+                {"success": submit_result.get("success"), "details": submit_result},
+            )
 
             if not submit_result.get("success"):
                 result["error"] = "Failed to submit registration form"
+                self.agent_logger.log_step_result(
+                    step_num=step_num,
+                    step_name="request_key",
+                    success=False,
+                    error=result["error"],
+                )
                 return result
 
             # Check what happened after submission
             import time
+            self.agent_logger.log_substep(step_num, "Waiting for page to load after submission")
             time.sleep(3)
 
             content = browser.get_page_content()
             api_elements = browser.find_api_key_elements()
 
             # Analyze the post-submission page
+            self.agent_logger.log_substep(
+                step_num,
+                "Analyzing post-submission page",
+                {
+                    "page_title": content.get("title"),
+                    "api_key_displays_found": len(api_elements.get("api_key_displays", [])),
+                },
+            )
+
             post_analysis = self._analyze_post_submission(
                 content=content,
                 api_elements=api_elements,
             )
 
+            self.agent_logger.log_substep(
+                step_num,
+                "Post-submission analysis result",
+                {
+                    "key_found": post_analysis.get("key") is not None,
+                    "email_verification_required": post_analysis.get("email_verification_required"),
+                    "status": post_analysis.get("status"),
+                    "message": post_analysis.get("message"),
+                },
+            )
+
             if post_analysis.get("key"):
                 result["success"] = True
                 result["key"] = post_analysis["key"]
+                self.agent_logger.log_step_result(
+                    step_num=step_num,
+                    step_name="request_key",
+                    success=True,
+                    result={
+                        "key_received": True,
+                        "masked_key": _mask_sensitive(post_analysis["key"]),
+                    },
+                )
 
             elif post_analysis.get("email_verification_required"):
                 result["success"] = True
                 result["email_verification_pending"] = True
                 result["verification_message"] = post_analysis.get("message", "Check your email")
+                self.agent_logger.log_step_result(
+                    step_num=step_num,
+                    step_name="request_key",
+                    success=True,
+                    result={
+                        "email_verification_pending": True,
+                        "verification_message": result["verification_message"],
+                    },
+                )
 
             elif post_analysis.get("error"):
                 result["error"] = post_analysis["error"]
+                self.agent_logger.log_step_result(
+                    step_num=step_num,
+                    step_name="request_key",
+                    success=False,
+                    error=result["error"],
+                )
 
             else:
                 # Assume email verification is needed
                 result["success"] = True
                 result["email_verification_pending"] = True
+                self.agent_logger.log_step_result(
+                    step_num=step_num,
+                    step_name="request_key",
+                    success=True,
+                    result={
+                        "email_verification_pending": True,
+                        "message": "Assuming email verification is required (no explicit confirmation)",
+                    },
+                )
 
             return result
 
         except Exception as e:
-            logger.error(f"Error requesting key: {e}", exc_info=True)
+            self.agent_logger.log_error(
+                f"Error requesting key: {type(e).__name__}",
+                error=e,
+                source_name=source_name,
+            )
             result["error"] = str(e)
             return result
 
@@ -464,17 +979,42 @@ class APIKeyAgent:
         Returns:
             Email content dict if found, None otherwise
         """
-        if not self.email_service:
-            logger.warning("Email service not configured")
-            return None
-
         subject_keywords = subject_keywords or ["API Key", "API", "Registration", "Verification"]
+
+        step_num = self.agent_logger.log_step_start(
+            step_name="poll_email",
+            step_description="Poll email inbox for API key or verification email",
+            variables={
+                "sender_domain": sender_domain,
+                "subject_keywords": subject_keywords,
+                "max_wait_minutes": max_wait_minutes,
+            },
+        )
+
+        if not self.email_service:
+            self.agent_logger.log_step_result(
+                step_num=step_num,
+                step_name="poll_email",
+                success=False,
+                error="Email service not configured",
+            )
+            return None
 
         max_attempts = max_wait_minutes * 2  # Check every 30 seconds
         interval = 30
 
+        self.agent_logger.log_substep(
+            step_num,
+            "Starting email polling loop",
+            {"max_attempts": max_attempts, "interval_seconds": interval},
+        )
+
         for attempt in range(max_attempts):
-            logger.info(f"Polling email (attempt {attempt + 1}/{max_attempts})")
+            self.agent_logger.log_substep(
+                step_num,
+                f"Polling email (attempt {attempt + 1}/{max_attempts})",
+                {"sender_domain": sender_domain},
+            )
 
             emails = self.email_service.search_for_api_key(
                 sender_domain=sender_domain,
@@ -482,20 +1022,57 @@ class APIKeyAgent:
                 since_minutes=max_wait_minutes + 5,
             )
 
+            self.agent_logger.log_substep(
+                step_num,
+                "Email search result",
+                {"emails_found": len(emails) if emails else 0},
+            )
+
             if emails:
                 for email in emails:
                     email_id = email.get("id")
+                    email_subject = email.get("subject", "Unknown")
+
+                    self.agent_logger.log_substep(
+                        step_num,
+                        "Processing found email",
+                        {"email_id": email_id, "subject": email_subject},
+                    )
+
                     if email_id:
                         full_email = self.email_service.get_email_content(email_id)
                         if full_email:
-                            logger.info(f"Found email from {sender_domain}")
+                            self.agent_logger.log_step_result(
+                                step_num=step_num,
+                                step_name="poll_email",
+                                success=True,
+                                result={
+                                    "email_found": True,
+                                    "sender_domain": sender_domain,
+                                    "subject": full_email.get("subject"),
+                                    "attempts_taken": attempt + 1,
+                                },
+                            )
                             return full_email
 
             if attempt < max_attempts - 1:
                 import time
+                self.agent_logger.log_substep(
+                    step_num,
+                    f"No email found yet, waiting {interval} seconds before next attempt",
+                )
                 time.sleep(interval)
 
-        logger.warning(f"No email found from {sender_domain} after {max_wait_minutes} minutes")
+        self.agent_logger.log_step_result(
+            step_num=step_num,
+            step_name="poll_email",
+            success=False,
+            result={
+                "email_found": False,
+                "attempts_made": max_attempts,
+                "total_wait_minutes": max_wait_minutes,
+            },
+        )
         return None
 
     def respond_to_email(self, email_content: Dict[str, Any]) -> Dict[str, Any]:
@@ -510,6 +1087,19 @@ class APIKeyAgent:
         Returns:
             Result dict with action taken and any extracted key
         """
+        email_subject = email_content.get("subject", "")
+        email_body = email_content.get("body", "") or email_content.get("snippet", "")
+
+        step_num = self.agent_logger.log_step_start(
+            step_name="respond_to_email",
+            step_description="Analyze email and take appropriate action (extract key, click verification link, etc.)",
+            variables={
+                "email_subject": email_subject,
+                "email_body_length": len(email_body),
+                "email_sender": email_content.get("from"),
+            },
+        )
+
         result = {
             "action_taken": None,
             "key": None,
@@ -517,21 +1107,40 @@ class APIKeyAgent:
         }
 
         try:
-            email_body = email_content.get("body", "") or email_content.get("snippet", "")
-            email_subject = email_content.get("subject", "")
-
             # Use LLM to analyze the email and determine what action to take
+            self.agent_logger.log_substep(step_num, "Using LLM to analyze email for action")
             analysis = self._analyze_email_for_action(
                 subject=email_subject,
                 body=email_body,
             )
 
+            self.agent_logger.log_substep(
+                step_num,
+                "Email analysis result",
+                {
+                    "contains_api_key": analysis.get("contains_api_key"),
+                    "has_verification_link": analysis.get("verification_link") is not None,
+                    "has_verification_code": analysis.get("verification_code") is not None,
+                    "action_required": analysis.get("action_required"),
+                },
+            )
+
             if analysis.get("contains_api_key"):
                 # Extract the key directly
+                self.agent_logger.log_substep(step_num, "Email contains API key, attempting extraction")
                 key = self.extract_key_from_email(email_body)
                 if key:
                     result["action_taken"] = "extracted_key"
                     result["key"] = key
+                    self.agent_logger.log_step_result(
+                        step_num=step_num,
+                        step_name="respond_to_email",
+                        success=True,
+                        result={
+                            "action_taken": "extracted_key",
+                            "masked_key": _mask_sensitive(key),
+                        },
+                    )
                     return result
 
             if analysis.get("verification_link"):
@@ -539,20 +1148,50 @@ class APIKeyAgent:
                 link = analysis["verification_link"]
                 result["action_taken"] = "clicked_verification_link"
 
+                self.agent_logger.log_substep(
+                    step_num,
+                    "Found verification link, navigating to it",
+                    {"link": link},
+                )
+
                 browser = self._get_browser_service()
                 nav_result = browser.navigate_to_url(link)
+
+                self.agent_logger.log_substep(
+                    step_num,
+                    "Navigation to verification link result",
+                    {"success": nav_result.get("success")},
+                )
 
                 if nav_result.get("success"):
                     # Check if key is now available
                     import time
+                    self.agent_logger.log_substep(step_num, "Waiting for page load after verification")
                     time.sleep(3)
 
                     api_elements = browser.find_api_key_elements()
+
+                    self.agent_logger.log_substep(
+                        step_num,
+                        "Checking for API key on verification page",
+                        {"api_key_displays_found": len(api_elements.get("api_key_displays", []))},
+                    )
+
                     if api_elements.get("api_key_displays"):
                         for display in api_elements["api_key_displays"]:
                             key_text = display.get("text", "")
                             if self._validate_api_key(key_text):
                                 result["key"] = key_text
+                                self.agent_logger.log_step_result(
+                                    step_num=step_num,
+                                    step_name="respond_to_email",
+                                    success=True,
+                                    result={
+                                        "action_taken": "clicked_verification_link",
+                                        "key_found_after_verification": True,
+                                        "masked_key": _mask_sensitive(key_text),
+                                    },
+                                )
                                 return result
 
             if analysis.get("verification_code"):
@@ -560,10 +1199,29 @@ class APIKeyAgent:
                 result["action_taken"] = "found_verification_code"
                 result["verification_code"] = analysis["verification_code"]
 
+                self.agent_logger.log_substep(
+                    step_num,
+                    "Found verification code in email",
+                    {"verification_code": analysis["verification_code"]},
+                )
+
+            self.agent_logger.log_step_result(
+                step_num=step_num,
+                step_name="respond_to_email",
+                success=result.get("action_taken") is not None,
+                result={
+                    "action_taken": result["action_taken"],
+                    "key_found": result["key"] is not None,
+                },
+            )
             return result
 
         except Exception as e:
-            logger.error(f"Error responding to email: {e}")
+            self.agent_logger.log_error(
+                f"Error responding to email: {type(e).__name__}",
+                error=e,
+                email_subject=email_subject,
+            )
             result["error"] = str(e)
             return result
 
@@ -608,6 +1266,19 @@ class APIKeyAgent:
     ) -> Dict[str, Any]:
         """Use LLM to analyze a page and determine API key availability."""
 
+        step_num = self.agent_logger.log_step_start(
+            step_name="_analyze_page_for_api_key",
+            step_description="Use LLM to analyze webpage and determine how to obtain API key",
+            variables={
+                "url": url,
+                "page_title": content.get("title", "Unknown"),
+                "visible_text_length": len(content.get("visible_text", "")),
+                "links_count": len(links.get("links", [])),
+                "api_key_displays_found": len(api_elements.get("api_key_displays", [])),
+                "generate_buttons_found": len(api_elements.get("generate_buttons", [])),
+            },
+        )
+
         prompt = f"""Analyze this webpage to determine how to obtain an API key.
 
 URL: {url}
@@ -643,7 +1314,17 @@ Return JSON:
 }}
 """
 
+        # Log the prompt
+        self.agent_logger.log_prompt(
+            step_num=step_num,
+            operation="analyze_page_for_api_key",
+            prompt=prompt,
+        )
+
         try:
+            import time
+            start_time = time.time()
+
             messages = [HumanMessage(content=prompt)]
             response = invoke_llm_with_logging(
                 self.llm,
@@ -652,16 +1333,47 @@ Return JSON:
                 operation="analyze_page_for_api_key"
             )
 
+            elapsed_ms = (time.time() - start_time) * 1000
             response_text = response.content
+
+            # Log raw LLM response
+            self.agent_logger.log_llm_response(
+                step_num=step_num,
+                operation="analyze_page_for_api_key",
+                response_content=response_text,
+                elapsed_ms=elapsed_ms,
+            )
+
+            # Parse JSON
             if "```json" in response_text:
                 response_text = response_text.split("```json")[1].split("```")[0]
             elif "```" in response_text:
                 response_text = response_text.split("```")[1].split("```")[0]
 
-            return json.loads(response_text.strip())
+            parsed_result = json.loads(response_text.strip())
+
+            # Log parsed result
+            self.agent_logger.log_step_result(
+                step_num=step_num,
+                step_name="_analyze_page_for_api_key",
+                success=True,
+                result={
+                    "key_available_on_site": parsed_result.get("key_available_on_site"),
+                    "can_automate_registration": parsed_result.get("can_automate_registration"),
+                    "requires_email_verification": parsed_result.get("requires_email_verification"),
+                    "needs_navigation": parsed_result.get("needs_navigation"),
+                    "llm_reasoning": parsed_result.get("notes"),
+                },
+            )
+
+            return parsed_result
 
         except Exception as e:
-            logger.error(f"Failed to analyze page: {e}")
+            self.agent_logger.log_error(
+                f"Failed to analyze page: {type(e).__name__}",
+                error=e,
+                url=url,
+            )
             return {
                 "key_available_on_site": False,
                 "needs_navigation": True,
@@ -674,6 +1386,17 @@ Return JSON:
         form_fields: Dict[str, Any],
     ) -> Dict[str, Any]:
         """Analyze a registration page to understand how to complete it."""
+
+        step_num = self.agent_logger.log_step_start(
+            step_name="_analyze_registration_page",
+            step_description="Use LLM to analyze registration page and determine automation feasibility",
+            variables={
+                "page_title": content.get("title"),
+                "visible_text_length": len(content.get("visible_text", "")),
+                "form_fields_count": len(form_fields.get("fields", [])),
+                "api_elements_found": bool(api_elements.get("api_key_displays") or api_elements.get("generate_buttons")),
+            },
+        )
 
         prompt = f"""Analyze this API key registration page.
 
@@ -702,7 +1425,17 @@ Return JSON:
 }}
 """
 
+        # Log the prompt
+        self.agent_logger.log_prompt(
+            step_num=step_num,
+            operation="analyze_registration_page",
+            prompt=prompt,
+        )
+
         try:
+            import time
+            start_time = time.time()
+
             messages = [HumanMessage(content=prompt)]
             response = invoke_llm_with_logging(
                 self.llm,
@@ -711,16 +1444,46 @@ Return JSON:
                 operation="analyze_registration_page"
             )
 
+            elapsed_ms = (time.time() - start_time) * 1000
             response_text = response.content
+
+            # Log raw LLM response
+            self.agent_logger.log_llm_response(
+                step_num=step_num,
+                operation="analyze_registration_page",
+                response_content=response_text,
+                elapsed_ms=elapsed_ms,
+            )
+
+            # Parse JSON
             if "```json" in response_text:
                 response_text = response_text.split("```json")[1].split("```")[0]
             elif "```" in response_text:
                 response_text = response_text.split("```")[1].split("```")[0]
 
-            return json.loads(response_text.strip())
+            parsed_result = json.loads(response_text.strip())
+
+            # Log parsed result
+            self.agent_logger.log_step_result(
+                step_num=step_num,
+                step_name="_analyze_registration_page",
+                success=True,
+                result={
+                    "can_automate_registration": parsed_result.get("can_automate_registration"),
+                    "required_fields": parsed_result.get("required_fields"),
+                    "has_captcha": parsed_result.get("has_captcha"),
+                    "requires_email_verification": parsed_result.get("requires_email_verification"),
+                    "llm_reasoning": parsed_result.get("notes"),
+                },
+            )
+
+            return parsed_result
 
         except Exception as e:
-            logger.error(f"Failed to analyze registration page: {e}")
+            self.agent_logger.log_error(
+                f"Failed to analyze registration page: {type(e).__name__}",
+                error=e,
+            )
             return {"can_automate_registration": False}
 
     def _llm_driven_navigation(
@@ -742,6 +1505,15 @@ Return JSON:
         Returns:
             List of steps taken
         """
+        nav_step_num = self.agent_logger.log_step_start(
+            step_name="_llm_driven_navigation",
+            step_description="LLM-driven browser automation loop to navigate toward a goal",
+            variables={
+                "goal": goal,
+                "max_steps": max_steps,
+            },
+        )
+
         steps = []
         conversation_history = []
 
@@ -766,6 +1538,12 @@ If the goal is achieved or you can't proceed, use action "done" with:
 }}
 """
 
+        self.agent_logger.log_substep(
+            nav_step_num,
+            "Initializing navigation with system prompt",
+            {"system_prompt_length": len(system_prompt)},
+        )
+
         conversation_history.append(SystemMessage(content=system_prompt))
 
         for step_num in range(max_steps):
@@ -773,6 +1551,17 @@ If the goal is achieved or you can't proceed, use action "done" with:
             content = browser.get_page_content()
             links = browser.get_links()
             api_elements = browser.find_api_key_elements()
+
+            self.agent_logger.log_substep(
+                nav_step_num,
+                f"Navigation iteration {step_num + 1}/{max_steps}",
+                {
+                    "current_url": content.get("url"),
+                    "page_title": content.get("title"),
+                    "links_count": links.get("count", 0),
+                    "api_elements_found": bool(api_elements.get("api_key_displays") or api_elements.get("generate_buttons")),
+                },
+            )
 
             # Build state description for LLM
             state_description = f"""
@@ -795,7 +1584,18 @@ What action should I take next to achieve the goal?
 
             conversation_history.append(HumanMessage(content=state_description))
 
+            # Log the current state being sent to LLM
+            self.agent_logger.log_prompt(
+                step_num=nav_step_num,
+                operation=f"llm_driven_navigation_step_{step_num + 1}",
+                prompt=state_description,
+                additional_context={"conversation_length": len(conversation_history)},
+            )
+
             try:
+                import time
+                start_time = time.time()
+
                 response = invoke_llm_with_logging(
                     self.llm,
                     conversation_history,
@@ -803,8 +1603,17 @@ What action should I take next to achieve the goal?
                     operation="llm_driven_navigation"
                 )
 
+                elapsed_ms = (time.time() - start_time) * 1000
                 response_text = response.content
                 conversation_history.append(AIMessage(content=response_text))
+
+                # Log LLM response
+                self.agent_logger.log_llm_response(
+                    step_num=nav_step_num,
+                    operation=f"llm_driven_navigation_step_{step_num + 1}",
+                    response_content=response_text,
+                    elapsed_ms=elapsed_ms,
+                )
 
                 # Parse the action
                 if "```json" in response_text:
@@ -823,9 +1632,30 @@ What action should I take next to achieve the goal?
 
                 action = action_data.get("action")
 
+                self.agent_logger.log_substep(
+                    nav_step_num,
+                    f"LLM decided action for step {step_num + 1}",
+                    {
+                        "action": action,
+                        "params": action_data.get("params", {}),
+                        "llm_reasoning": action_data.get("reasoning"),
+                    },
+                )
+
                 if action == "done":
                     step_record["success"] = action_data.get("success", False)
                     steps.append(step_record)
+
+                    self.agent_logger.log_step_result(
+                        step_num=nav_step_num,
+                        step_name="_llm_driven_navigation",
+                        success=action_data.get("success", False),
+                        result={
+                            "total_steps": len(steps),
+                            "final_action": "done",
+                            "llm_reasoning": action_data.get("reasoning"),
+                        },
+                    )
                     break
 
                 elif action == "navigate_to_url":
@@ -833,26 +1663,56 @@ What action should I take next to achieve the goal?
                     if url:
                         result = browser.navigate_to_url(url)
                         step_record["result"] = result
+                        self.agent_logger.log_substep(
+                            nav_step_num,
+                            f"Executed navigate_to_url",
+                            {"url": url, "success": result.get("success")},
+                        )
 
                 elif action == "click_element":
                     selector = action_data.get("params", {}).get("selector")
                     if selector:
                         result = browser.click_element(selector)
                         step_record["result"] = result
+                        self.agent_logger.log_substep(
+                            nav_step_num,
+                            f"Executed click_element",
+                            {"selector": selector, "success": result.get("success")},
+                        )
 
                 elif action == "get_links":
                     result = browser.get_links()
                     step_record["result"] = {"count": result.get("count", 0)}
+                    self.agent_logger.log_substep(
+                        nav_step_num,
+                        f"Executed get_links",
+                        {"links_count": result.get("count", 0)},
+                    )
 
                 steps.append(step_record)
 
             except Exception as e:
-                logger.error(f"Navigation step {step_num + 1} failed: {e}")
+                self.agent_logger.log_error(
+                    f"Navigation step {step_num + 1} failed: {type(e).__name__}",
+                    error=e,
+                )
                 steps.append({
                     "step": step_num + 1,
                     "error": str(e),
                 })
                 break
+
+        # Final result if we didn't break early
+        if not steps or steps[-1].get("action") != "done":
+            self.agent_logger.log_step_result(
+                step_num=nav_step_num,
+                step_name="_llm_driven_navigation",
+                success=False,
+                result={
+                    "total_steps": len(steps),
+                    "reason": "Max steps reached without completing goal",
+                },
+            )
 
         return steps
 
@@ -864,6 +1724,17 @@ What action should I take next to achieve the goal?
         source_name: str,
     ) -> List[Dict[str, str]]:
         """Use LLM to determine how to fill form fields."""
+
+        step_num = self.agent_logger.log_step_start(
+            step_name="_get_form_fill_instructions",
+            step_description="Use LLM to determine how to fill registration form fields",
+            variables={
+                "form_fields_count": len(form_fields),
+                "email": email,
+                "password_length": len(password),
+                "source_name": source_name,
+            },
+        )
 
         prompt = f"""Given these form fields, determine what values to fill in for API key registration.
 
@@ -894,7 +1765,18 @@ Only include fields that should be filled with non-empty values.
 Use the field's 'name', 'id', or a CSS selector as the selector.
 """
 
+        # Log the prompt (with password masked)
+        masked_prompt = prompt.replace(password, _mask_sensitive(password))
+        self.agent_logger.log_prompt(
+            step_num=step_num,
+            operation="get_form_fill_instructions",
+            prompt=masked_prompt,
+        )
+
         try:
+            import time
+            start_time = time.time()
+
             messages = [HumanMessage(content=prompt)]
             response = invoke_llm_with_logging(
                 self.llm,
@@ -903,16 +1785,51 @@ Use the field's 'name', 'id', or a CSS selector as the selector.
                 operation="get_form_fill_instructions"
             )
 
+            elapsed_ms = (time.time() - start_time) * 1000
             response_text = response.content
+
+            # Log LLM response
+            self.agent_logger.log_llm_response(
+                step_num=step_num,
+                operation="get_form_fill_instructions",
+                response_content=response_text,
+                elapsed_ms=elapsed_ms,
+            )
+
+            # Parse JSON
             if "```json" in response_text:
                 response_text = response_text.split("```json")[1].split("```")[0]
             elif "```" in response_text:
                 response_text = response_text.split("```")[1].split("```")[0]
 
-            return json.loads(response_text.strip())
+            parsed_result = json.loads(response_text.strip())
+
+            # Log result (with sensitive values masked)
+            masked_instructions = [
+                {
+                    "selector": inst.get("selector"),
+                    "value_type": "password" if "password" in inst.get("selector", "").lower() else "other",
+                }
+                for inst in parsed_result
+            ]
+
+            self.agent_logger.log_step_result(
+                step_num=step_num,
+                step_name="_get_form_fill_instructions",
+                success=True,
+                result={
+                    "instructions_count": len(parsed_result),
+                    "fields_mapped": masked_instructions,
+                },
+            )
+
+            return parsed_result
 
         except Exception as e:
-            logger.error(f"Failed to get form fill instructions: {e}")
+            self.agent_logger.log_error(
+                f"Failed to get form fill instructions: {type(e).__name__}",
+                error=e,
+            )
             # Return basic instructions
             return [
                 {"selector": "email", "value": email},
@@ -925,6 +1842,16 @@ Use the field's 'name', 'id', or a CSS selector as the selector.
         api_elements: Dict[str, Any],
     ) -> Dict[str, Any]:
         """Analyze the page after form submission."""
+
+        step_num = self.agent_logger.log_step_start(
+            step_name="_analyze_post_submission",
+            step_description="Use LLM to analyze page after form submission for API key or verification status",
+            variables={
+                "page_title": content.get("title"),
+                "visible_text_length": len(content.get("visible_text", "")),
+                "api_key_displays_found": len(api_elements.get("api_key_displays", [])),
+            },
+        )
 
         prompt = f"""Analyze this page that appeared after submitting an API key registration form.
 
@@ -950,7 +1877,17 @@ Return JSON:
 }}
 """
 
+        # Log the prompt
+        self.agent_logger.log_prompt(
+            step_num=step_num,
+            operation="analyze_post_submission",
+            prompt=prompt,
+        )
+
         try:
+            import time
+            start_time = time.time()
+
             messages = [HumanMessage(content=prompt)]
             response = invoke_llm_with_logging(
                 self.llm,
@@ -959,16 +1896,47 @@ Return JSON:
                 operation="analyze_post_submission"
             )
 
+            elapsed_ms = (time.time() - start_time) * 1000
             response_text = response.content
+
+            # Log LLM response
+            self.agent_logger.log_llm_response(
+                step_num=step_num,
+                operation="analyze_post_submission",
+                response_content=response_text,
+                elapsed_ms=elapsed_ms,
+            )
+
+            # Parse JSON
             if "```json" in response_text:
                 response_text = response_text.split("```json")[1].split("```")[0]
             elif "```" in response_text:
                 response_text = response_text.split("```")[1].split("```")[0]
 
-            return json.loads(response_text.strip())
+            parsed_result = json.loads(response_text.strip())
+
+            # Log parsed result
+            self.agent_logger.log_step_result(
+                step_num=step_num,
+                step_name="_analyze_post_submission",
+                success=True,
+                result={
+                    "key_found": parsed_result.get("key") is not None,
+                    "masked_key": _mask_sensitive(parsed_result.get("key")) if parsed_result.get("key") else None,
+                    "email_verification_required": parsed_result.get("email_verification_required"),
+                    "status": parsed_result.get("status"),
+                    "message": parsed_result.get("message"),
+                    "error": parsed_result.get("error"),
+                },
+            )
+
+            return parsed_result
 
         except Exception as e:
-            logger.error(f"Failed to analyze post-submission page: {e}")
+            self.agent_logger.log_error(
+                f"Failed to analyze post-submission page: {type(e).__name__}",
+                error=e,
+            )
             return {"status": "unknown"}
 
     def _analyze_email_for_action(
@@ -977,6 +1945,15 @@ Return JSON:
         body: str,
     ) -> Dict[str, Any]:
         """Analyze an email to determine what action to take."""
+
+        step_num = self.agent_logger.log_step_start(
+            step_name="_analyze_email_for_action",
+            step_description="Use LLM to analyze email content and determine required action",
+            variables={
+                "email_subject": subject,
+                "email_body_length": len(body),
+            },
+        )
 
         prompt = f"""Analyze this email and determine what action to take.
 
@@ -999,7 +1976,17 @@ Return JSON:
 }}
 """
 
+        # Log the prompt
+        self.agent_logger.log_prompt(
+            step_num=step_num,
+            operation="analyze_email_for_action",
+            prompt=prompt,
+        )
+
         try:
+            import time
+            start_time = time.time()
+
             messages = [HumanMessage(content=prompt)]
             response = invoke_llm_with_logging(
                 self.llm,
@@ -1008,21 +1995,62 @@ Return JSON:
                 operation="analyze_email_for_action"
             )
 
+            elapsed_ms = (time.time() - start_time) * 1000
             response_text = response.content
+
+            # Log LLM response
+            self.agent_logger.log_llm_response(
+                step_num=step_num,
+                operation="analyze_email_for_action",
+                response_content=response_text,
+                elapsed_ms=elapsed_ms,
+            )
+
+            # Parse JSON
             if "```json" in response_text:
                 response_text = response_text.split("```json")[1].split("```")[0]
             elif "```" in response_text:
                 response_text = response_text.split("```")[1].split("```")[0]
 
-            return json.loads(response_text.strip())
+            parsed_result = json.loads(response_text.strip())
+
+            # Log parsed result
+            self.agent_logger.log_step_result(
+                step_num=step_num,
+                step_name="_analyze_email_for_action",
+                success=True,
+                result={
+                    "contains_api_key": parsed_result.get("contains_api_key"),
+                    "has_verification_link": parsed_result.get("verification_link") is not None,
+                    "has_verification_code": parsed_result.get("verification_code") is not None,
+                    "action_required": parsed_result.get("action_required"),
+                },
+            )
+
+            return parsed_result
 
         except Exception as e:
-            logger.error(f"Failed to analyze email: {e}")
+            self.agent_logger.log_error(
+                f"Failed to analyze email: {type(e).__name__}",
+                error=e,
+                email_subject=subject,
+            )
             return {}
 
     def _validate_api_key(self, key_text: str) -> bool:
         """Use LLM to validate if a string looks like an API key."""
+        self.agent_logger.log_info(
+            "Validating potential API key",
+            key_length=len(key_text) if key_text else 0,
+            masked_key=_mask_sensitive(key_text) if key_text else None,
+        )
+
         if not key_text or len(key_text) < 10 or len(key_text) > 200:
+            self.agent_logger.log_info(
+                "Key validation failed - length check",
+                reason="Key too short or too long",
+                length=len(key_text) if key_text else 0,
+            )
             return False
 
         prompt = f"""Is this text likely to be an API key? API keys are typically:
@@ -1037,21 +2065,49 @@ Respond with only "YES" or "NO".
 """
 
         try:
+            import time
+            start_time = time.time()
+
             messages = [HumanMessage(content=prompt)]
             response = self.llm.invoke(messages)
-            return "YES" in response.content.upper()
-        except Exception:
+
+            elapsed_ms = (time.time() - start_time) * 1000
+            is_valid = "YES" in response.content.upper()
+
+            self.agent_logger.log_info(
+                "Key validation LLM response",
+                llm_response=response.content.strip(),
+                is_valid=is_valid,
+                elapsed_ms=round(elapsed_ms, 0),
+            )
+
+            return is_valid
+        except Exception as e:
+            self.agent_logger.log_warning(
+                f"LLM validation failed, falling back to heuristic: {type(e).__name__}",
+            )
             # Fall back to simple heuristic
             import re
             # Check if it looks like an API key
             if re.match(r'^[A-Za-z0-9\-_]{16,}$', key_text):
+                self.agent_logger.log_info("Key validation passed (heuristic: alphanumeric pattern)")
                 return True
             if re.match(r'^[A-Fa-f0-9\-]{36}$', key_text):  # UUID
+                self.agent_logger.log_info("Key validation passed (heuristic: UUID pattern)")
                 return True
+            self.agent_logger.log_info("Key validation failed (heuristic: no pattern match)")
             return False
 
     def _llm_extract_api_key(self, content: str) -> Optional[str]:
         """Extract API key from content using LLM."""
+        step_num = self.agent_logger.log_step_start(
+            step_name="_llm_extract_api_key",
+            step_description="Use LLM to extract API key from content",
+            variables={
+                "content_length": len(content),
+            },
+        )
+
         prompt = f"""Extract the API key from this content.
 
 Content:
@@ -1066,16 +2122,56 @@ Look for:
 Return ONLY the API key string if found, or "NOT_FOUND" if no key is present.
 """
 
+        # Log the prompt
+        self.agent_logger.log_prompt(
+            step_num=step_num,
+            operation="llm_extract_api_key",
+            prompt=prompt,
+        )
+
         try:
+            import time
+            start_time = time.time()
+
             messages = [HumanMessage(content=prompt)]
             response = self.llm.invoke(messages)
+
+            elapsed_ms = (time.time() - start_time) * 1000
             extracted = response.content.strip().replace("`", "").replace('"', "").replace("'", "")
 
+            # Log LLM response
+            self.agent_logger.log_llm_response(
+                step_num=step_num,
+                operation="llm_extract_api_key",
+                response_content=response.content,
+                elapsed_ms=elapsed_ms,
+            )
+
             if extracted and extracted != "NOT_FOUND" and len(extracted) > 10:
+                self.agent_logger.log_step_result(
+                    step_num=step_num,
+                    step_name="_llm_extract_api_key",
+                    success=True,
+                    result={
+                        "key_extracted": True,
+                        "masked_key": _mask_sensitive(extracted),
+                    },
+                )
                 return extracted
+
+            self.agent_logger.log_step_result(
+                step_num=step_num,
+                step_name="_llm_extract_api_key",
+                success=False,
+                result={"key_extracted": False, "reason": "No valid key found in content"},
+            )
             return None
+
         except Exception as e:
-            logger.error(f"Failed to extract API key: {e}")
+            self.agent_logger.log_error(
+                f"Failed to extract API key: {type(e).__name__}",
+                error=e,
+            )
             return None
 
     def _generate_secure_password(self) -> str:
