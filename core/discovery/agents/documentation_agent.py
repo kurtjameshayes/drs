@@ -29,6 +29,33 @@ from ..llm_logger import invoke_llm_with_logging
 logger = logging.getLogger(__name__)
 
 
+def _extract_first_json_object(content: str) -> Optional[Dict[str, Any]]:
+    """
+    Extract the first valid JSON object from a string.
+
+    This handles cases where the LLM returns multiple JSON objects or
+    extra text after the JSON, which would cause json.loads() to fail
+    with "Extra data" error.
+
+    Args:
+        content: String that may contain one or more JSON objects
+
+    Returns:
+        The first parsed JSON object, or None if no valid JSON found
+    """
+    start = content.find("{")
+    if start == -1:
+        return None
+
+    # Use raw_decode to parse only the first complete JSON object
+    decoder = json.JSONDecoder()
+    try:
+        obj, _ = decoder.raw_decode(content[start:])
+        return obj
+    except json.JSONDecodeError:
+        return None
+
+
 class DocumentationAgent:
     """
     Agent 4: Document the complete access methodology for the selected source.
@@ -67,10 +94,8 @@ class DocumentationAgent:
             )
             content = response.content
 
-            start = content.find("{")
-            end = content.rfind("}") + 1
-            if start != -1 and end > start:
-                result = json.loads(content[start:end])
+            result = _extract_first_json_object(content)
+            if result:
                 connector_type = result.get("connector_type", "discovered")
 
                 try:
@@ -189,10 +214,8 @@ class DocumentationAgent:
             content = response.content
 
             # Extract JSON from response
-            start = content.find("{")
-            end = content.rfind("}") + 1
-            if start != -1 and end > start:
-                doc_data = json.loads(content[start:end])
+            doc_data = _extract_first_json_object(content)
+            if doc_data:
 
                 # Determine connector type
                 connector_type = self._determine_connector_type(
@@ -244,6 +267,8 @@ class DocumentationAgent:
                     notes=doc_data.get("notes", ""),
                     mapped_connector_type=connector_type,
                 )
+            else:
+                raise ValueError("No valid JSON object found in LLM response")
 
         except Exception as e:
             logger.error(f"Failed to extract documentation: {e}")
