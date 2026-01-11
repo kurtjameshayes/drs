@@ -27,6 +27,12 @@ def extract_first_json_object(content: str) -> Optional[Dict[str, Any]]:
     """
     start = content.find("{")
     if start == -1:
+        logger.error(
+            f"JSON parsing failed: No '{{' found in LLM response.\n"
+            f"=== OFFENDING LLM RESPONSE (first 2000 chars) ===\n"
+            f"{content[:2000]}\n"
+            f"=== END OFFENDING RESPONSE ==="
+        )
         return None
 
     # Use raw_decode to parse only the first complete JSON object
@@ -35,7 +41,12 @@ def extract_first_json_object(content: str) -> Optional[Dict[str, Any]]:
         obj, _ = decoder.raw_decode(content[start:])
         return obj
     except json.JSONDecodeError as e:
-        logger.debug(f"Failed to parse JSON object: {e}")
+        logger.error(
+            f"JSON parsing failed: {e}\n"
+            f"=== OFFENDING LLM RESPONSE (first 2000 chars) ===\n"
+            f"{content[:2000]}\n"
+            f"=== END OFFENDING RESPONSE ==="
+        )
         return None
 
 
@@ -55,6 +66,12 @@ def extract_first_json_array(content: str) -> Optional[List[Any]]:
     """
     start = content.find("[")
     if start == -1:
+        logger.error(
+            f"JSON array parsing failed: No '[' found in LLM response.\n"
+            f"=== OFFENDING LLM RESPONSE (first 2000 chars) ===\n"
+            f"{content[:2000]}\n"
+            f"=== END OFFENDING RESPONSE ==="
+        )
         return None
 
     # Use raw_decode to parse only the first complete JSON array
@@ -63,5 +80,10 @@ def extract_first_json_array(content: str) -> Optional[List[Any]]:
         arr, _ = decoder.raw_decode(content[start:])
         return arr
     except json.JSONDecodeError as e:
-        logger.debug(f"Failed to parse JSON array: {e}")
+        logger.error(
+            f"JSON array parsing failed: {e}\n"
+            f"=== OFFENDING LLM RESPONSE (first 2000 chars) ===\n"
+            f"{content[:2000]}\n"
+            f"=== END OFFENDING RESPONSE ==="
+        )
         return None

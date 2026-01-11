@@ -242,7 +242,13 @@ class DocumentationAgent:
                     mapped_connector_type=connector_type,
                 )
             else:
-                raise ValueError("No valid JSON object found in LLM response")
+                # Print the raw LLM response for debugging
+                print(f"\n{'='*60}")
+                print("DOCUMENTATION AGENT: JSON PARSING FAILED")
+                print(f"{'='*60}")
+                print(f"LLM Response (first 2000 chars):\n{content[:2000]}")
+                print(f"{'='*60}\n")
+                raise ValueError(f"No valid JSON object found in LLM response. Response started with: {content[:100]}...")
 
         except Exception as e:
             logger.error(f"Failed to extract documentation: {e}")
