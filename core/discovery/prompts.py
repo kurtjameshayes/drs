@@ -47,7 +47,7 @@ For each source found, provide:
 4. source_type: One of "government", "commercial", "academic", "open_source", "other"
 5. relevance_score: 0.0-1.0 indicating how well it matches the description
 
-Return the results as a JSON array of objects."""
+IMPORTANT: Your response must be ONLY a valid JSON array. Do not include any explanatory text, comments, or markdown formatting before or after the JSON. Do not wrap the JSON in code fences. Start your response with [ and end with ]."""
 
 # =============================================================================
 # EXAMINATION AGENT PROMPTS
@@ -91,7 +91,7 @@ Determine:
 7. documentation_url: URL to general documentation
 8. access_notes: Any important notes about accessing this source
 
-Return your findings as a JSON object."""
+IMPORTANT: Your response must be ONLY a valid JSON object. Do not include any explanatory text, comments, or markdown formatting before or after the JSON. Do not wrap the JSON in code fences. Start your response with { and end with }."""
 
 # =============================================================================
 # SELECTION AGENT PROMPTS
@@ -127,7 +127,9 @@ Only consider sources where provides_desired_data is true.
 Return your selection as a JSON object with:
 1. selected_index: The index of the selected source (0-based)
 2. reasoning: Why this source was selected
-3. access_method: The recommended access method ("api", "web_service", or "download")"""
+3. access_method: The recommended access method ("api", "web_service", or "download")
+
+IMPORTANT: Your response must be ONLY a valid JSON object. Do not include any explanatory text, comments, or markdown formatting before or after the JSON. Do not wrap the JSON in code fences. Start your response with { and end with }."""
 
 # =============================================================================
 # DOCUMENTATION AGENT PROMPTS
@@ -197,7 +199,7 @@ Provide complete documentation including:
 9. mapped_connector_type: Which existing connector type this maps to
 10. notes: Any other important information
 
-Return as a complete JSON object."""
+IMPORTANT: Your response must be ONLY a valid JSON object. Do not include any explanatory text, comments, or markdown formatting before or after the JSON. Do not wrap the JSON in code fences. Start your response with {{ and end with }}."""
 
 # =============================================================================
 # TESTING AGENT PROMPTS
@@ -240,7 +242,9 @@ Return test results as a JSON object:
 5. data_matches_description: true if data appears relevant to user's needs
 6. sample_data: Small sample of received data (if successful)
 7. error_message: Description of any errors encountered
-8. attempts: Number of attempts made"""
+8. attempts: Number of attempts made
+
+IMPORTANT: Your response must be ONLY a valid JSON object. Do not include any explanatory text, comments, or markdown formatting before or after the JSON. Do not wrap the JSON in code fences. Start your response with { and end with }."""
 
 # =============================================================================
 # CONFIGURATION AGENT PROMPTS
@@ -285,7 +289,7 @@ CONFIGURATION_AGENT_TASK = """Create a MongoDB configuration record for this dat
 Generate a complete configuration record that follows the existing connector_configs schema.
 The source_id should be a URL-safe slug derived from the source name (lowercase, hyphens for spaces).
 
-Return the configuration as a JSON object ready to insert into MongoDB."""
+IMPORTANT: Your response must be ONLY a valid JSON object. Do not include any explanatory text, comments, or markdown formatting before or after the JSON. Do not wrap the JSON in code fences. Start your response with { and end with }."""
 
 # =============================================================================
 # CONNECTOR TYPE MAPPING PROMPT
@@ -309,4 +313,6 @@ Available connector types:
 Return the connector_type that best matches this source. If it's a government data API
 that doesn't match the specific types above, use "discovered".
 
-Return as JSON: {{"connector_type": "type_name", "confidence": 0.0-1.0, "reasoning": "..."}}"""
+IMPORTANT: Your response must be ONLY a valid JSON object. Do not include any explanatory text, comments, or markdown formatting. Do not wrap the JSON in code fences.
+
+Respond with exactly: {{"connector_type": "type_name", "confidence": 0.0-1.0, "reasoning": "..."}}"""
