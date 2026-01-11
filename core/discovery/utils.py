@@ -6,9 +6,31 @@ This module provides common utilities used across multiple agents.
 
 import json
 import logging
+import re
 from typing import Dict, Any, Optional, List
 
 logger = logging.getLogger(__name__)
+
+
+def sanitize_for_format_string(text: str) -> str:
+    """
+    Sanitize text for safe use in Python format strings.
+
+    Web content and user input may contain curly braces that would be
+    interpreted as format placeholders, causing KeyError exceptions.
+    This function escapes curly braces by doubling them.
+
+    Args:
+        text: The input text that may contain curly braces
+
+    Returns:
+        Text with curly braces escaped ({{ and }})
+    """
+    if not text or not isinstance(text, str):
+        return text or ""
+
+    # Escape curly braces by doubling them
+    return text.replace("{", "{{").replace("}", "}}")
 
 
 def extract_first_json_object(content: str) -> Optional[Dict[str, Any]]:
