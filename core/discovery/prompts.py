@@ -86,7 +86,7 @@ Determine:
 2. has_web_service: Does it have a SOAP or other web service? (true/false)
 3. has_download: Does it offer downloadable data files? (true/false)
 4. has_contact_required: Does the site indicate you must contact them directly to access data (e.g., "contact us for access", "request data via email")? (true/false)
-5. provides_desired_data: Does it provide the data the user is looking for? (true/false)
+5. provides_desired_data: Could this source reasonably provide data relevant to the user's request? Be GENEROUS here - if the source offers data in the same general domain or category as what the user is looking for, answer true. For example, if a user wants "weather data" and the source provides forecasts, current conditions, or any meteorological information, that counts as true. Only answer false if the source is clearly unrelated to the user's request. (true/false)
 6. api_url: URL to the API documentation (if found)
 7. documentation_url: URL to general documentation
 8. access_notes: Any important notes about accessing this source
