@@ -23,6 +23,7 @@ from ..state import (
 )
 from ..prompts import SELECTION_AGENT_SYSTEM, SELECTION_AGENT_TASK
 from ..llm_logger import invoke_llm_with_logging
+from ..utils import extract_first_json_object
 
 logger = logging.getLogger(__name__)
 
@@ -169,11 +170,9 @@ class SelectionAgent:
             )
             content = response.content
 
-            # Extract JSON from response
-            start = content.find("{")
-            end = content.rfind("}") + 1
-            if start != -1 and end > start:
-                selection = json.loads(content[start:end])
+            # Extract JSON from response using safe extraction
+            selection = extract_first_json_object(content)
+            if selection:
                 selected_index = selection.get("selected_index", 0)
 
                 if 0 <= selected_index < len(top_candidates):
