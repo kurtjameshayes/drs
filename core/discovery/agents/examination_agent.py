@@ -22,6 +22,7 @@ from ..state import (
 from ..prompts import EXAMINATION_AGENT_SYSTEM, EXAMINATION_AGENT_TASK
 from ..tools import fetch_url, check_api_availability, detect_access_methods, find_documentation_url
 from ..llm_logger import invoke_llm_with_logging
+from ..utils import extract_first_json_object
 
 logger = logging.getLogger(__name__)
 
@@ -106,12 +107,9 @@ Based on this information, provide your analysis as JSON."""),
             )
             response_content = response.content
 
-            # Extract JSON from response
-            start = response_content.find("{")
-            end = response_content.rfind("}") + 1
-            if start != -1 and end > start:
-                analysis = json.loads(response_content[start:end])
-
+            # Extract JSON from response using safe extraction
+            analysis = extract_first_json_object(response_content)
+            if analysis:
                 return ExaminedSource(
                     candidate=candidate,
                     has_api=analysis.get("has_api", access_methods["has_api"]) or api_check.get("has_api", False),
