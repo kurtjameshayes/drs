@@ -22,7 +22,7 @@ from ..state import (
 from ..prompts import EXAMINATION_AGENT_SYSTEM, EXAMINATION_AGENT_TASK
 from ..tools import fetch_url, check_api_availability, detect_access_methods, find_documentation_url
 from ..llm_logger import invoke_llm_with_logging
-from ..utils import extract_first_json_object
+from ..utils import extract_first_json_object, sanitize_for_format_string
 
 logger = logging.getLogger(__name__)
 
@@ -77,14 +77,20 @@ class ExaminationAgent:
         # Find documentation URL
         doc_url = find_documentation_url(candidate.url, links)
 
+        # Sanitize all inputs that may contain curly braces from web content
+        safe_source_name = sanitize_for_format_string(candidate.name)
+        safe_source_url = sanitize_for_format_string(candidate.url)
+        safe_source_description = sanitize_for_format_string(candidate.description)
+        safe_user_description = sanitize_for_format_string(user_description)
+
         # Use LLM to analyze whether this source provides the desired data
         messages = [
             SystemMessage(content=EXAMINATION_AGENT_SYSTEM),
             HumanMessage(content=EXAMINATION_AGENT_TASK.format(
-                source_name=candidate.name,
-                source_url=candidate.url,
-                source_description=candidate.description,
-                user_description=user_description,
+                source_name=safe_source_name,
+                source_url=safe_source_url,
+                source_description=safe_source_description,
+                user_description=safe_user_description,
             )),
             HumanMessage(content=f"""Here is the content from the source's main page:
 
@@ -169,13 +175,43 @@ Based on this information, provide your analysis as JSON."""),
                 state["interrupted"] = True
                 return state
 
-            # Examine all sources
+            # Examine all sources - with per-source exception handling
             for i, result_dict in enumerate(search_results[current_index:], start=current_index):
                 logger.info(f"Examination Agent: Examining source {i + 1}/{len(search_results)}")
 
-                candidate = DataSourceCandidate.from_dict(result_dict)
-                examined = self._examine_source(candidate, user_description)
-                examined_sources.append(examined.to_dict())
+                try:
+                    candidate = DataSourceCandidate.from_dict(result_dict)
+                    examined = self._examine_source(candidate, user_description)
+                    examined_sources.append(examined.to_dict())
+                except Exception as source_error:
+                    # Log the error and skip this source, continue with others
+                    source_url = result_dict.get("url", "unknown")
+                    source_name = result_dict.get("name", "unknown")
+                    logger.warning(
+                        f"Examination Agent: Failed to examine source '{source_name}' ({source_url}): {source_error}. "
+                        f"Skipping and continuing with next source."
+                    )
+                    # Create a fallback examined source indicating the failure
+                    try:
+                        fallback_candidate = DataSourceCandidate(
+                            name=source_name,
+                            url=source_url,
+                            description=result_dict.get("description", "")[:500] if result_dict.get("description") else "",
+                            source_type=result_dict.get("source_type", "unknown"),
+                            relevance_score=result_dict.get("relevance_score", 0.0),
+                        )
+                        fallback_examined = ExaminedSource(
+                            candidate=fallback_candidate,
+                            has_api=False,
+                            has_web_service=False,
+                            has_download=False,
+                            has_contact_required=False,
+                            provides_desired_data=False,
+                            access_notes=f"Examination failed: {str(source_error)[:200]}",
+                        )
+                        examined_sources.append(fallback_examined.to_dict())
+                    except Exception as fallback_error:
+                        logger.error(f"Examination Agent: Could not create fallback for source: {fallback_error}")
 
                 # Update state
                 state["examined_sources"] = examined_sources

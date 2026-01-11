@@ -23,7 +23,7 @@ from ..state import (
 )
 from ..prompts import SELECTION_AGENT_SYSTEM, SELECTION_AGENT_TASK
 from ..llm_logger import invoke_llm_with_logging
-from ..utils import extract_first_json_object
+from ..utils import extract_first_json_object, sanitize_for_format_string
 
 logger = logging.getLogger(__name__)
 
@@ -153,10 +153,13 @@ class SelectionAgent:
         # Use LLM to make final selection among top candidates
         top_candidates = ranked_sources[:5]  # Consider top 5
 
+        # Sanitize user_description that may contain curly braces
+        safe_user_description = sanitize_for_format_string(user_description)
+
         messages = [
             SystemMessage(content=SELECTION_AGENT_SYSTEM),
             HumanMessage(content=SELECTION_AGENT_TASK.format(
-                user_description=user_description,
+                user_description=safe_user_description,
                 examined_sources_json=json.dumps(top_candidates, indent=2),
             )),
         ]

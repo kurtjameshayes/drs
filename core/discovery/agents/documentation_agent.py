@@ -25,7 +25,7 @@ from ..state import (
 from ..prompts import DOCUMENTATION_AGENT_SYSTEM, DOCUMENTATION_AGENT_TASK, CONNECTOR_TYPE_MAPPING
 from ..tools import fetch_url, parse_openapi_spec, check_api_availability
 from ..llm_logger import invoke_llm_with_logging
-from ..utils import extract_first_json_object
+from ..utils import extract_first_json_object, sanitize_for_format_string
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +50,17 @@ class DocumentationAgent:
         self, source_name: str, source_url: str, description: str
     ) -> ConnectorType:
         """Determine which existing connector type this source maps to."""
+        # Sanitize inputs that may contain curly braces from web content
+        safe_source_name = sanitize_for_format_string(source_name)
+        safe_source_url = sanitize_for_format_string(source_url)
+        safe_description = sanitize_for_format_string(description)
+
         messages = [
             SystemMessage(content="You are a data source classifier."),
             HumanMessage(content=CONNECTOR_TYPE_MAPPING.format(
-                source_name=source_name,
-                source_url=source_url,
-                source_description=description,
+                source_name=safe_source_name,
+                source_url=safe_source_url,
+                source_description=safe_description,
             )),
         ]
 
@@ -166,14 +171,23 @@ class DocumentationAgent:
 
         documentation_context = "\n\n---\n\n".join(context_parts)
 
+        # Sanitize inputs that may contain curly braces from web content
+        safe_source_name = sanitize_for_format_string(candidate.get("name", "Unknown"))
+        safe_source_url = sanitize_for_format_string(candidate.get("url", ""))
+        safe_documentation_url = sanitize_for_format_string(
+            selected_source.get("documentation_url") or selected_source.get("api_url") or candidate.get("url", "")
+        )
+        safe_access_method = sanitize_for_format_string(access_method_str)
+        safe_user_description = sanitize_for_format_string(user_description)
+
         messages = [
             SystemMessage(content=DOCUMENTATION_AGENT_SYSTEM),
             HumanMessage(content=DOCUMENTATION_AGENT_TASK.format(
-                source_name=candidate.get("name", "Unknown"),
-                source_url=candidate.get("url", ""),
-                documentation_url=selected_source.get("documentation_url") or selected_source.get("api_url") or candidate.get("url", ""),
-                access_method=access_method_str,
-                user_description=user_description,
+                source_name=safe_source_name,
+                source_url=safe_source_url,
+                documentation_url=safe_documentation_url,
+                access_method=safe_access_method,
+                user_description=safe_user_description,
             )),
             HumanMessage(content=f"Here is the documentation content I found:\n\n{documentation_context}"),
         ]
