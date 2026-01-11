@@ -430,7 +430,7 @@ Does this response contain or indicate access to relevant data?"""),
                         logger.info(f"Testing Agent: Provided API key was rejected ({status_code}). Asking for new key (attempt {retry_count + 1}).")
                         return state
 
-                    # No API key was provided yet - first time asking
+                    # No API key was provided yet - trigger automatic key acquisition
                     state["error"] = WorkflowError(
                         agent_name="TestingAgent",
                         step="testing",
@@ -440,22 +440,8 @@ Does this response contain or indicate access to relevant data?"""),
                     ).to_dict()
                     state["interrupted"] = True
 
-                    # Set up human input request for API key
-                    state["waiting_for_human_input"] = True
-                    state["pause_reason"] = "needs_api_key"
-                    state["human_input_request"] = HumanInputRequest(
-                        input_type=HumanInputType.API_KEY,
-                        field_name="api_key",
-                        description=f"API key required for {source_name}",
-                        required=True,
-                        registration_url=registration_url,
-                        additional_info={
-                            "auth_type": auth_type,
-                            "auth_header": auth.get("auth_header"),
-                        },
-                    ).to_dict()
-
-                    logger.info(f"Testing Agent: Auth failed ({status_code}). Requesting API key from user.")
+                    # Don't set waiting_for_human_input - let workflow route to acquire_api_key step
+                    logger.info(f"Testing Agent: Auth failed ({status_code}). Routing to API key acquisition.")
                     return state
 
                 test_results = TestResults(
