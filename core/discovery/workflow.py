@@ -234,7 +234,8 @@ class DataSourceDiscoveryWorkflow:
             return PauseReason.EXISTING_SOURCE_FOUND
 
         # Fallback: check error for clues
-        error = state.get("error", {})
+        # Use `or {}` to handle cases where error is explicitly set to None
+        error = state.get("error") or {}
         if error.get("issue", "").lower().find("oauth") >= 0:
             return PauseReason.NEEDS_AUTHENTICATION
         elif error.get("recoverable"):
@@ -249,7 +250,8 @@ class DataSourceDiscoveryWorkflow:
         if human_input_request.get("description"):
             return human_input_request["description"]
 
-        error = state.get("error", {})
+        # Use `or {}` to handle cases where error is explicitly set to None
+        error = state.get("error") or {}
         if error.get("issue"):
             return error["issue"]
 
@@ -287,7 +289,8 @@ class DataSourceDiscoveryWorkflow:
             human_input_required = state.get("human_input_request")
             if not human_input_required:
                 # Fallback for legacy behavior (testing agent API key flow)
-                error = state.get("error", {})
+                # Use `or {}` to handle cases where error is explicitly set to None
+                error = state.get("error") or {}
                 auth_info = state.get("access_documentation", {}).get("authentication", {})
                 human_input_required = {
                     "type": "api_key",
@@ -366,7 +369,8 @@ class DataSourceDiscoveryWorkflow:
         state = self.testing_agent.run(state)
 
         # Check if test failed due to auth requirement
-        error = state.get("error", {})
+        # Use `or {}` to handle cases where error is explicitly set to None
+        error = state.get("error") or {}
         if error.get("recoverable") and "authentication" in error.get("issue", "").lower():
             # This needs human input - mark as waiting
             state["waiting_for_human_input"] = True
@@ -425,8 +429,9 @@ class DataSourceDiscoveryWorkflow:
         if not state.get("interrupted"):
             return "stop"
 
-        error = state.get("error", {})
-        test_results = state.get("test_results", {})
+        # Use `or {}` to handle cases where error is explicitly set to None
+        error = state.get("error") or {}
+        test_results = state.get("test_results") or {}
 
         # Build context for decision agent
         error_context = {
@@ -538,7 +543,8 @@ class DataSourceDiscoveryWorkflow:
         """Legacy rule-based routing logic."""
         # If interrupted with auth error and haven't tried key acquisition
         if state.get("interrupted"):
-            error = state.get("error", {})
+            # Use `or {}` to handle cases where error is explicitly set to None
+            error = state.get("error") or {}
             error_issue = error.get("issue", "").lower()
 
             # Check if it's an auth error
@@ -690,7 +696,8 @@ class DataSourceDiscoveryWorkflow:
             if result["success"]:
                 logger.info(f"Workflow {workflow_id} completed successfully. Source ID: {result['source_id']}")
             else:
-                error = final_state.get("error", {})
+                # Use `or {}` to handle cases where error is explicitly set to None
+                error = final_state.get("error") or {}
                 logger.warning(f"Workflow {workflow_id} interrupted: {error.get('issue', 'Unknown error')}")
 
             return result
