@@ -341,10 +341,13 @@ Score each source by relevance to the user's needs.""")
             user_description = user_description.strip()
 
             # Check if user already decided about existing sources
+            # Note: use_existing can be True/False (boolean), 1/0 (integer), or None
+            # We use explicit None check to distinguish "not set" from "set to falsy value"
             use_existing = state.get("use_existing_source")
 
-            if use_existing is True:
+            if use_existing is not None and use_existing:
                 # User wants to use an existing source - skip search and complete
+                # This handles both True and truthy values like 1
                 selected_source_id = state.get("selected_existing_source_id")
                 if selected_source_id:
                     logger.info(f"Search Agent: User chose to use existing source: {selected_source_id}")
@@ -364,8 +367,31 @@ Score each source by relevance to the user's needs.""")
                     state["testing_completed"] = True
                     state["configuration_completed"] = True
                     return state
+                else:
+                    # User indicated use_existing but no source_id selected
+                    # Try to use the first available existing source
+                    existing_sources = state.get("existing_sources_found", [])
+                    if existing_sources:
+                        first_source = existing_sources[0]
+                        selected_source_id = first_source.get("source_id")
+                        if selected_source_id:
+                            logger.info(f"Search Agent: No source_id specified, using first existing source: {selected_source_id}")
+                            state["_using_existing_source"] = first_source
+                            state["source_id"] = selected_source_id
+                            state["selected_existing_source_id"] = selected_source_id
+                            state["config_id"] = first_source.get("_id")
 
-            if use_existing is False:
+                            state["search_completed"] = True
+                            state["examination_completed"] = True
+                            state["selection_completed"] = True
+                            state["documentation_completed"] = True
+                            state["testing_completed"] = True
+                            state["configuration_completed"] = True
+                            return state
+                    # Fall through to search if no existing sources available
+                    logger.warning("Search Agent: use_existing_source set but no existing sources found, proceeding with search")
+
+            elif use_existing is not None and not use_existing:
                 # User explicitly wants a new source - continue with search
                 logger.info("Search Agent: User requested new source discovery, skipping existing source check")
             else:
