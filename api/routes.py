@@ -2846,10 +2846,10 @@ def resume_workflow(workflow_id):
         workflow = DataSourceDiscoveryWorkflow()
         result = workflow.resume(workflow_id, data)
 
-        if result.get("error", {}).get("issue") == "Workflow not found":
+        if (result.get("error") or {}).get("issue") == "Workflow not found":
             return jsonify(result), 404
 
-        if result.get("error", {}).get("issue") == "Workflow not paused":
+        if (result.get("error") or {}).get("issue") == "Workflow not paused":
             return jsonify(result), 400
 
         if result.get("cancelled"):
@@ -2959,11 +2959,11 @@ def retry_workflow(workflow_id):
         result = workflow.retry_failed_workflow(workflow_id, from_step=from_step)
 
         # Handle not found
-        if result.get("error", {}).get("issue") == "Workflow not found":
+        if (result.get("error") or {}).get("issue") == "Workflow not found":
             return jsonify(result), 404
 
         # Handle not failed status
-        if result.get("error", {}).get("issue") == "Workflow not in failed status":
+        if (result.get("error") or {}).get("issue") == "Workflow not in failed status":
             return jsonify(result), 400
 
         # Handle successful completion
