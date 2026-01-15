@@ -811,7 +811,7 @@ class DataSourceDiscoveryWorkflow:
 
         elif pause_reason == PauseReason.EXISTING_SOURCE_FOUND.value:
             # User choosing whether to use existing source or discover new
-            if human_input.get("use_existing", False):
+            if human_input.get("use_existing_source", False):
                 # User wants to use an existing source
                 state["use_existing_source"] = True
                 selected_index = human_input.get("selected_index", 0)
