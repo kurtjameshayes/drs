@@ -10,6 +10,7 @@ running external searches.
 
 import json
 import logging
+import re
 from typing import Dict, Any, List, Optional
 
 from langchain_anthropic import ChatAnthropic
@@ -94,21 +95,33 @@ class SearchAgent:
                     # Check if connector type has matching keywords
                     keywords = self.CONNECTOR_TYPE_KEYWORDS.get(connector_type, [])
 
-                    # Check if any keyword is in the user's description
+                    # Check if any keyword matches using word boundaries
+                    # This prevents false matches like "a" in "NASA"
                     match_score = 0
+                    matched_keywords = []
                     for keyword in keywords:
-                        if keyword in description_lower:
+                        # Use word boundary regex to match whole words only
+                        pattern = r'\b' + re.escape(keyword) + r'\b'
+                        if re.search(pattern, description_lower):
                             match_score += 1
+                            matched_keywords.append(keyword)
 
-                    # Also check source name
+                    # Also check source name with word boundaries
                     if source_name:
                         for word in source_name.split():
-                            if len(word) > 3 and word in description_lower:
-                                match_score += 1
+                            if len(word) > 3:
+                                pattern = r'\b' + re.escape(word) + r'\b'
+                                if re.search(pattern, description_lower):
+                                    match_score += 1
+                                    matched_keywords.append(word)
 
-                    if match_score > 0:
+                    # Only include sources with at least 2 keyword matches to avoid false positives
+                    # This ensures the match is meaningful and not accidental
+                    if match_score >= 2:
                         connector["_match_score"] = match_score
+                        connector["_matched_keywords"] = matched_keywords
                         matching_sources.append(connector)
+                        logger.debug(f"Matched source '{source_name}' with score {match_score}, keywords: {matched_keywords}")
                 except Exception as e:
                     logger.warning(f"Failed to process connector during matching: {e}, connector: {connector}")
                     continue
