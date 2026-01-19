@@ -310,7 +310,10 @@ Does this response contain or indicate access to relevant data?"""),
             # Check if authentication is required but we don't have credentials
             auth = access_doc.get("authentication", {})
             if auth.get("required") and not has_real_credentials:
-                logger.warning("Testing Agent: API requires authentication but no credentials provided")
+                logger.warning(
+                    "Testing Agent: API requires authentication but no credentials provided. "
+                    "Will attempt test anyway, then invoke api_key_agent if authentication fails."
+                )
                 # Still try the request - some APIs return useful info even without auth
 
             # Execute test

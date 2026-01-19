@@ -164,23 +164,29 @@ class DataSourceDiscoveryWorkflow:
             }
         )
 
+        # After test: route based on results
+        # - If auth required and no credentials -> "needs_key" -> acquire_api_key
+        # - If test passed -> "configure"
+        # - If test failed but retryable -> "retry_test"
+        # - Otherwise -> "stop"
         workflow.add_conditional_edges(
             "test",
             self._check_after_test,
             {
-                "needs_key": "acquire_api_key",
+                "needs_key": "acquire_api_key",  # Authentication required, invoke api_key_agent
                 "configure": "configure",
                 "retry_test": "test",  # Loop back to test for retries
                 "stop": END,
             }
         )
 
+        # After api_key acquisition: retry test with new credentials or stop
         workflow.add_conditional_edges(
             "acquire_api_key",
             self._check_after_key_acquisition,
             {
-                "retry_test": "test",
-                "stop": END,
+                "retry_test": "test",  # Key acquired successfully, retry test
+                "stop": END,  # Key acquisition failed, pause for manual input
             }
         )
 
@@ -501,10 +507,15 @@ class DataSourceDiscoveryWorkflow:
         if decision.action == "needs_key":
             # Safety: Only attempt acquisition once
             if state.get("api_key_acquisition_attempted"):
-                logger.warning("API key acquisition already attempted, pausing instead")
+                logger.warning(
+                    "API key acquisition already attempted - pausing for manual input instead"
+                )
                 state["waiting_for_human_input"] = True
                 return "stop"
-            logger.info("Routing to API key acquisition")
+            logger.info(
+                "Authentication required - routing to api_key_agent for automatic acquisition. "
+                f"Confidence: {decision.confidence:.2f}, Reasoning: {decision.reasoning}"
+            )
             return "needs_key"
 
         elif decision.action == "retry_test":
@@ -554,8 +565,15 @@ class DataSourceDiscoveryWorkflow:
             ):
                 # Only attempt key acquisition once
                 if not state.get("api_key_acquisition_attempted"):
-                    logger.info("Auth error detected, attempting API key acquisition")
+                    logger.info(
+                        "Auth error detected in testing phase - routing to api_key_agent for automatic acquisition. "
+                        f"Error: {error_issue}"
+                    )
                     return "needs_key"
+                else:
+                    logger.warning(
+                        "Auth error detected but api_key_acquisition already attempted - stopping workflow"
+                    )
 
         # Otherwise stop (will pause for human input or end with error)
         return "stop"
