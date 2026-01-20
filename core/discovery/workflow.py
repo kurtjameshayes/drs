@@ -871,6 +871,7 @@ class DataSourceDiscoveryWorkflow:
             "document": self._document_node,
             "test": self._test_node,
             "configure": self._configure_node,
+            "acquire_api_key": self._acquire_api_key_node,
         }
 
         # Find the index of current step
@@ -891,9 +892,53 @@ class DataSourceDiscoveryWorkflow:
             logger.info(f"Resume: Running step '{step_name}'")
             state = step_method(state)
 
-            # Check if we need to stop
-            if state.get("waiting_for_human_input") or state.get("interrupted"):
-                logger.info(f"Resume: Stopping at step '{step_name}' - waiting_for_human_input={state.get('waiting_for_human_input')}, interrupted={state.get('interrupted')}")
+            # Special handling for test step - check for conditional routing
+            if step_name == "test" and state.get("interrupted") and not state.get("waiting_for_human_input"):
+                # Test step encountered an issue - use router to determine next action
+                next_action = self._check_after_test(state)
+                logger.info(f"Resume: Test step needs routing - next action: {next_action}")
+
+                if next_action == "needs_key":
+                    # Route to API key acquisition
+                    logger.info("Resume: Routing to acquire_api_key node")
+                    state = self._acquire_api_key_node(state)
+
+                    # After acquiring key, retry test
+                    logger.info("Resume: Retrying test after API key acquisition")
+                    state = self._test_node(state)
+
+                    # Check test result again - if still interrupted, stop
+                    if state.get("interrupted") or state.get("waiting_for_human_input"):
+                        logger.info(f"Resume: Test still interrupted after API key acquisition - stopping")
+                        break
+                    # Otherwise continue to next step (configure)
+                    continue
+
+                elif next_action == "retry_test":
+                    # Retry test
+                    logger.info("Resume: Retrying test")
+                    state = self._test_node(state)
+
+                    # Check test result - if still interrupted, stop
+                    if state.get("interrupted") or state.get("waiting_for_human_input"):
+                        logger.info(f"Resume: Test still interrupted after retry - stopping")
+                        break
+                    # Otherwise continue to next step
+                    continue
+
+                elif next_action == "stop":
+                    # Stop as directed by router
+                    logger.info("Resume: Router directed to stop")
+                    break
+
+                elif next_action == "configure":
+                    # Continue to configure step
+                    logger.info("Resume: Router directed to configure")
+                    continue
+
+            # Check if we need to stop for human input
+            if state.get("waiting_for_human_input"):
+                logger.info(f"Resume: Stopping at step '{step_name}' - waiting_for_human_input=True")
                 break
 
             # Check if using existing source - skip remaining steps
