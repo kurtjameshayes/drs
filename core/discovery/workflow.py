@@ -378,22 +378,26 @@ class DataSourceDiscoveryWorkflow:
         # Use `or {}` to handle cases where error is explicitly set to None
         error = state.get("error") or {}
         if error.get("recoverable") and "authentication" in error.get("issue", "").lower():
-            # This needs human input - mark as waiting
-            state["waiting_for_human_input"] = True
+            # Only set waiting_for_human_input if API key acquisition was already attempted
+            # Otherwise, let the router direct to APIKeyAgent first
+            if state.get("api_key_acquisition_attempted"):
+                # API key agent already tried and failed - now need human input
+                state["waiting_for_human_input"] = True
 
-            # Create the human input request
-            auth_info = state.get("access_documentation", {}).get("authentication", {})
-            state["human_input_request"] = HumanInputRequest(
-                input_type=HumanInputType.API_KEY,
-                field_name="api_key",
-                description=f"API key required for {state.get('access_documentation', {}).get('source_name', 'data source')}",
-                required=True,
-                registration_url=auth_info.get("registration_url"),
-                additional_info={
-                    "auth_type": auth_info.get("auth_type"),
-                    "auth_header": auth_info.get("auth_header"),
-                }
-            ).to_dict()
+                # Create the human input request
+                auth_info = state.get("access_documentation", {}).get("authentication", {})
+                state["human_input_request"] = HumanInputRequest(
+                    input_type=HumanInputType.API_KEY,
+                    field_name="api_key",
+                    description=f"API key required for {state.get('access_documentation', {}).get('source_name', 'data source')}",
+                    required=True,
+                    registration_url=auth_info.get("registration_url"),
+                    additional_info={
+                        "auth_type": auth_info.get("auth_type"),
+                        "auth_header": auth_info.get("auth_header"),
+                    }
+                ).to_dict()
+            # else: Let the router check if we should route to acquire_api_key first
 
         self._persist_state(state, "test")
         return state
