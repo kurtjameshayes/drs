@@ -12,5 +12,31 @@ class Config:
     CACHE_ENABLED = os.getenv("CACHE_ENABLED", "false").lower() == "true"
     API_HOST = os.getenv("API_HOST", "0.0.0.0")
     API_PORT = int(os.getenv("API_PORT", 5000))
+    DEBUG = os.getenv("DEBUG", "false").lower() == "true"
+    WERKZEUG_DEBUG_PIN = os.getenv("WERKZEUG_DEBUG_PIN", "off")
     MAX_RETRIES = int(os.getenv("MAX_RETRIES", 3))
     RETRY_BACKOFF_FACTOR = float(os.getenv("RETRY_BACKOFF_FACTOR", 2.0))
+
+    # LangGraph Discovery Workflow Configuration
+    ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+    TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
+    DISCOVERY_LLM_MODEL = os.getenv("DISCOVERY_LLM_MODEL", "claude-sonnet-4-20250514")
+    DISCOVERY_MAX_SEARCH_RESULTS = int(os.getenv("DISCOVERY_MAX_SEARCH_RESULTS", 10))
+    DISCOVERY_TEST_RETRIES = int(os.getenv("DISCOVERY_TEST_RETRIES", 3))
+    DISCOVERY_TEST_BACKOFF = float(os.getenv("DISCOVERY_TEST_BACKOFF", 2.0))
+    DISCOVERY_REQUEST_TIMEOUT = int(os.getenv("DISCOVERY_REQUEST_TIMEOUT", 30))
+
+    # API Key Gathering Configuration
+    ARCADE_API_KEY = os.getenv("ARCADE_API_KEY", "")
+    DISCOVERY_EMAIL = os.getenv("DISCOVERY_EMAIL", "")
+    ARCADE_USER_ID = os.getenv("ARCADE_USER_ID", "")  # Optional, defaults to DISCOVERY_EMAIL
+    API_KEY_CHECK_INTERVAL = int(os.getenv("API_KEY_CHECK_INTERVAL", 30))  # Seconds between email checks
+    API_KEY_CHECK_MAX_ATTEMPTS = int(os.getenv("API_KEY_CHECK_MAX_ATTEMPTS", 20))  # Max email check attempts
+    API_KEY_ENCRYPTION_KEY = os.getenv("API_KEY_ENCRYPTION_KEY", "")  # Fernet key for API key encryption
+
+    # Browser Automation Configuration
+    BROWSER_HEADLESS = os.getenv("BROWSER_HEADLESS", "true").lower() == "true"  # Run browser in headless mode
+    BROWSER_TIMEOUT = int(os.getenv("BROWSER_TIMEOUT", 30))  # Browser operation timeout in seconds
+
+    # Workflow Orchestration Configuration
+    ENABLE_INTELLIGENT_WORKFLOW_ROUTING = os.getenv("ENABLE_INTELLIGENT_WORKFLOW_ROUTING", "true").lower() == "true"

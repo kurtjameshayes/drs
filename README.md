@@ -11,6 +11,7 @@ A flexible, extensible data retrieval framework built with Python and MongoDB.
 - Query result caching with TTL
 - JSON-formatted API queries
 - Automatic retry with exponential backoff
+- AI-powered data source discovery using LangGraph
 
 ## Quick Start
 
@@ -25,7 +26,10 @@ A flexible, extensible data retrieval framework built with Python and MongoDB.
 cd data_retrieval_system
 pip install -r requirements.txt
 cp .env.example .env
+# Edit .env and add required configuration (see API Key Encryption section below)
 ```
+
+**Important:** After updating your `.env` file or making configuration changes, restart the server for changes to take effect.
 
 ### Initialize Database
 
@@ -84,6 +88,12 @@ Server runs at `http://localhost:5000`
 
 - `GET /api/v1/cache/stats` - Cache statistics
 - `DELETE /api/v1/cache/{id}` - Invalidate cache
+
+### Discovery
+
+- `POST /api/v1/discovery` - Discover and configure a new data source
+- `GET /api/v1/discovery/status` - Get discovery module status
+- `POST /api/v1/discovery/validate` - Validate a discovery description
 
 ## Example Query
 
@@ -161,6 +171,87 @@ The `DataAnalysisEngine` unlocks:
 - Linear and non-linear (random forest) regressions
 - Multivariate PCA projections
 - Predictive analysis with shared configuration
+
+## AI-Powered Data Source Discovery
+
+The system includes an AI-powered data source discovery module that uses LangGraph
+to automatically find, evaluate, and configure new data sources based on natural
+language descriptions.
+
+### Prerequisites
+
+Set the following environment variables in your `.env` file:
+
+```bash
+ANTHROPIC_API_KEY=your_anthropic_api_key
+TAVILY_API_KEY=your_tavily_api_key
+
+# CRITICAL: API Key Encryption Key (required for API key storage)
+# Generate with: python3 scripts/generate_encryption_key.py
+API_KEY_ENCRYPTION_KEY=your_generated_encryption_key
+```
+
+**Important:** The `API_KEY_ENCRYPTION_KEY` is required for the system to securely store API keys in MongoDB. Without this key:
+- The system will generate a temporary key on each restart
+- Previously stored API keys will become unreadable after restart
+
+To generate a secure encryption key:
+```bash
+python3 scripts/generate_encryption_key.py
+```
+
+Copy the generated key and add it to your `.env` file. **Never commit this key to version control.**
+
+### Discovery Workflow
+
+The discovery process uses 6 specialized agents:
+1. **Search Agent** - Finds potential data sources using Tavily and data registries
+2. **Examination Agent** - Evaluates access methods (API, web service, download)
+3. **Selection Agent** - Selects the best source based on reliability and access
+4. **Documentation Agent** - Extracts technical documentation for data access
+5. **Testing Agent** - Tests the data source access with retry logic
+6. **Configuration Agent** - Stores the configuration in MongoDB
+
+### API Usage
+
+```bash
+# Check discovery module status
+curl http://localhost:5000/api/v1/discovery/status
+
+# Validate a description before discovery
+curl -X POST http://localhost:5000/api/v1/discovery/validate \
+  -H "Content-Type: application/json" \
+  -d '{"description": "US weather data from NOAA"}'
+
+# Discover and configure a new data source
+curl -X POST http://localhost:5000/api/v1/discovery \
+  -H "Content-Type: application/json" \
+  -d '{"description": "US agricultural commodity prices and production statistics"}'
+```
+
+### Python Usage
+
+```python
+from core.discovery import discover_data_source
+
+result = discover_data_source("US agricultural commodity prices and production statistics")
+
+if result["success"]:
+    print(f"Configured source: {result['source_id']}")
+    print(f"Config ID: {result['config_id']}")
+else:
+    print(f"Error: {result['error']['issue']}")
+```
+
+### Configuration Options
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DISCOVERY_LLM_MODEL` | `claude-sonnet-4-20250514` | Claude model to use |
+| `DISCOVERY_MAX_SEARCH_RESULTS` | `10` | Maximum search results to consider |
+| `DISCOVERY_TEST_RETRIES` | `3` | Number of test retries |
+| `DISCOVERY_TEST_BACKOFF` | `2.0` | Retry backoff factor |
+| `DISCOVERY_REQUEST_TIMEOUT` | `30` | Request timeout in seconds |
 
 ## Connectors
 

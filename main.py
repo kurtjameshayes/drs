@@ -14,11 +14,17 @@ def main():
     logger.info("Starting Data Retrieval System")
     logger.info(f"API Host: {Config.API_HOST}")
     logger.info(f"API Port: {Config.API_PORT}")
+    logger.info(f"Debug Mode: {Config.DEBUG}")
     logger.info(f"MongoDB URI: {Config.MONGO_URI}")
     logger.info(f"Database: {Config.DATABASE_NAME}")
-    # comment here to force commit again.
+
+    # Set Werkzeug debug PIN if configured
+    if Config.WERKZEUG_DEBUG_PIN != "off":
+        os.environ['WERKZEUG_DEBUG_PIN'] = Config.WERKZEUG_DEBUG_PIN
+        logger.info(f"Werkzeug Debug PIN: {Config.WERKZEUG_DEBUG_PIN}")
+
     try:
-        app.run(host=Config.API_HOST, port=Config.API_PORT, debug=False)
+        app.run(host=Config.API_HOST, port=Config.API_PORT, debug=Config.DEBUG)
     except KeyboardInterrupt:
         logger.info("Shutting down...")
     except Exception as e:
