@@ -1375,6 +1375,9 @@ class APIKeyAgent:
             },
         )
 
+        # Get raw HTML for better form detection
+        raw_html = content.get('html', '')[:12000]
+
         prompt = f"""Analyze this webpage to determine how to obtain an API key.
 
 URL: {url}
@@ -1389,6 +1392,15 @@ Links found on page:
 
 API-related elements found:
 {json.dumps(api_elements, indent=2)}
+
+Raw HTML (for accurate form and button detection):
+{raw_html}
+
+IMPORTANT: Use the raw HTML above to accurately identify form fields and submit buttons. Look for:
+- <input> elements (type="text", "email", "password", etc.)
+- <textarea> elements
+- <button> or <input type="submit"> elements
+- Form structure and field names
 
 Based on this information, determine:
 
@@ -1495,16 +1507,25 @@ Return JSON:
             },
         )
 
+        # Get raw HTML for better form detection
+        raw_html = content.get('html', '')[:12000]
+
         prompt = f"""Analyze this API key registration page.
 
-Page Content:
+Page Content (visible text):
 {content.get('visible_text', '')[:4000]}
 
 API-related elements:
 {json.dumps(api_elements, indent=2)}
 
-Form fields found:
+Form fields found by browser automation:
 {json.dumps(form_fields.get('fields', []), indent=2)}
+
+Raw HTML (for accurate form and button detection):
+{raw_html}
+
+IMPORTANT: Use the raw HTML above to accurately identify ALL form fields and submit buttons.
+This is more reliable than the browser automation fields. Look for:
 
 When looking for form fields, recognize these common patterns:
 
