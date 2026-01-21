@@ -9,6 +9,7 @@ import logging
 import time
 import os
 import base64
+import re
 from typing import Optional, Dict, Any, List
 from urllib.parse import urljoin, urlparse
 
@@ -135,6 +136,9 @@ class BrowserAutomationService:
 
             # Get basic page info
             html_content = self.driver.page_source
+
+            # Strip <head> element before processing
+            html_content = re.sub(r'<head[^>]*>.*?</head>', '', html_content, flags=re.IGNORECASE | re.DOTALL)
 
             # Get visible text (excluding scripts and styles)
             body = self.driver.find_element(By.TAG_NAME, "body")
