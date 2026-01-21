@@ -26,6 +26,7 @@ from ..prompts import DOCUMENTATION_AGENT_SYSTEM, DOCUMENTATION_AGENT_TASK, CONN
 from ..tools import fetch_url, parse_openapi_spec, check_api_availability
 from ..llm_logger import invoke_llm_with_logging
 from ..utils import extract_first_json_object, sanitize_for_format_string
+from ..skill_registry import get_skill_registry
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,17 @@ class DocumentationAgent:
             temperature=0.1,
             max_tokens=4096,
         )
+        self.skill_registry = get_skill_registry()
+
+    def _build_system_prompt_with_skills(self, base_prompt: str, task_description: str) -> str:
+        """Build system prompt with task-specific skills."""
+        skills = self.skill_registry.get_skills_for_task('documentation', task_description)
+
+        if skills:
+            skills_text = self.skill_registry.format_skills_for_prompt(skills)
+            return f"{base_prompt}\n\n{skills_text}"
+
+        return base_prompt
 
     def _determine_connector_type(
         self, source_name: str, source_url: str, description: str
@@ -180,8 +192,14 @@ class DocumentationAgent:
         safe_access_method = sanitize_for_format_string(access_method_str)
         safe_user_description = sanitize_for_format_string(user_description)
 
+        # Get system prompt with task-specific skills
+        system_prompt = self._build_system_prompt_with_skills(
+            DOCUMENTATION_AGENT_SYSTEM,
+            f"Document API for {safe_source_name} with {safe_access_method} access method"
+        )
+
         messages = [
-            SystemMessage(content=DOCUMENTATION_AGENT_SYSTEM),
+            SystemMessage(content=system_prompt),
             HumanMessage(content=DOCUMENTATION_AGENT_TASK.format(
                 source_name=safe_source_name,
                 source_url=safe_source_url,
