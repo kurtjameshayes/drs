@@ -164,7 +164,7 @@ class BrowserAutomationService:
 
     def click_element(self, selector: str) -> Dict[str, Any]:
         """
-        Click on an element identified by CSS selector or text content.
+        Click on an element identified by CSS selector, XPath, or text content.
 
         Args:
             selector: CSS selector, XPath, or text content to find the element
@@ -183,7 +183,14 @@ class BrowserAutomationService:
             element = None
 
             # Try different strategies to find the element
-            strategies = [
+            strategies = []
+
+            # If it looks like an XPath, try it first
+            if selector.startswith("//") or selector.startswith("("):
+                strategies.append((By.XPATH, selector))
+
+            # Then try other strategies
+            strategies.extend([
                 # CSS selector
                 (By.CSS_SELECTOR, selector),
                 # XPath for exact text match
@@ -198,7 +205,7 @@ class BrowserAutomationService:
                 (By.ID, selector),
                 # Name
                 (By.NAME, selector),
-            ]
+            ])
 
             wait = WebDriverWait(self.driver, 10)
 
