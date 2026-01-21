@@ -523,7 +523,7 @@ class APIKeyAgent:
             self.agent_logger.log_substep(
                 step_num,
                 "Navigation result",
-                {"success": nav_result.get("success"), "current_url": nav_result.get("url")},
+                {"success": nav_result.get("success"), "current_url": nav_result.get("current_url")},
             )
 
             if not nav_result.get("success"):
