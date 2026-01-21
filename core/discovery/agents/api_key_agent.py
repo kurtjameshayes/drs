@@ -340,6 +340,40 @@ class APIKeyAgent:
                         registration_url=registration_url,
                     ))
 
+                # If Step 4 resulted in an error, stop and inform the user
+                if request_result.get("error"):
+                    step_error = self.agent_logger.log_step_start(
+                        step_name="handle_automation_error",
+                        step_description="Handle critical error from automated registration",
+                        variables={
+                            "error": request_result.get("error"),
+                        },
+                    )
+
+                    self.agent_logger.log_step_result(
+                        step_num=step_error,
+                        step_name="handle_automation_error",
+                        success=False,
+                        error=request_result.get("error"),
+                    )
+
+                    self.agent_logger.log_warning(
+                        "Automated registration failed with critical error, stopping workflow and requesting manual intervention",
+                        error=request_result.get("error"),
+                    )
+
+                    return self._request_manual_intervention(
+                        state,
+                        {
+                            "reason": "automation_failed_with_error",
+                            "message": f"Automated registration for {source_name} failed: {request_result.get('error')}. "
+                                      f"Please register manually and provide the API key.",
+                            "registration_url": registration_url,
+                            "site_info": site_info,
+                            "error_details": request_result.get("error"),
+                        },
+                    )
+
             # Step 5: Check if we can poll email for key
             self.agent_logger.log_decision(
                 step_num=workflow_step,
