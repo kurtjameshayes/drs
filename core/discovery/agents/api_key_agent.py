@@ -961,9 +961,14 @@ class APIKeyAgent:
                     )
                     browser.fill_form_field(field_selector, field_value)
 
-            # Submit the form
-            self.agent_logger.log_substep(step_num, "Submitting registration form")
-            submit_result = browser.submit_form()
+            # Submit the form using the selector from analysis if available
+            submit_selector = site_info.get("submit_button_selector")
+            self.agent_logger.log_substep(
+                step_num,
+                "Submitting registration form",
+                {"submit_selector": submit_selector or "using default patterns"},
+            )
+            submit_result = browser.submit_form(selector=submit_selector)
 
             self.agent_logger.log_substep(
                 step_num,
@@ -1594,25 +1599,52 @@ When looking for form fields, recognize these common patterns:
 When looking for submit buttons, recognize these common patterns:
 
 <submit-button-example-1>
-<button type="submit">
+<button type="submit">Submit</button>
 </submit-button-example-1>
 
 <submit-button-example-2>
-<input type="submit">
+<input type="submit" value="Sign Up">
 </submit-button-example-2>
 
 <submit-button-example-3>
-<input type="image" src="submit.png">
+<button class="btn btn-primary">Create Account</button>
 </submit-button-example-3>
 
 <submit-button-example-4>
-<button>Submit</button>
+<input type="submit" value="Register">
 </submit-button-example-4>
+
+<submit-button-example-5>
+<button onclick="submitForm()">Get API Key</button>
+</submit-button-example-5>
+
+<submit-button-example-6>
+<a class="btn btn-submit" href="javascript:void(0)">Continue</a>
+</submit-button-example-6>
+
+<submit-button-example-7>
+<button aria-label="Submit registration form">
+  <svg>...</svg>
+</button>
+</submit-button-example-7>
+
+<submit-button-example-8>
+<input type="image" src="submit.png" alt="Submit">
+</submit-button-example-8>
+
+<submit-button-example-9>
+<button id="submit-btn" type="submit">Complete Registration</button>
+</submit-button-example-9>
+
+<submit-button-example-10>
+<button data-testid="form-submit">Request Key</button>
+</submit-button-example-10>
 
 Determine:
 1. Can this registration be automated (just email/password, no captcha)?
 2. What form fields need to be filled?
 3. Will this require email verification?
+4. What is the submit button selector/identifier? (id, name, class, text content, or xpath)
 
 Return JSON:
 {{
@@ -1621,6 +1653,7 @@ Return JSON:
     "has_captcha": true/false,
     "requires_email_verification": true/false,
     "submit_button_text": "text on submit button",
+    "submit_button_selector": "selector or identifier for the submit button (id, class, xpath, text, etc.)",
     "notes": "any important observations"
 }}
 """
@@ -1978,6 +2011,14 @@ When identifying form fields, look for these common patterns:
 <form-field-example-5>
 <textarea name="use_case">
 </form-field-example-5>
+
+When looking for submit buttons, they may appear as:
+- <button type="submit">Submit</button>
+- <input type="submit" value="Sign Up">
+- <button class="btn btn-primary">Create Account</button>
+- <button onclick="submitForm()">Get API Key</button>
+- <a class="btn-submit" href="javascript:void(0)">Continue</a>
+- <button aria-label="Submit">Submit</button>
 
 For each field that should be filled, provide the selector and value.
 Common field mappings:
