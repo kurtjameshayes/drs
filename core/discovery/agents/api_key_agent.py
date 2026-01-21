@@ -26,6 +26,7 @@ from core.discovery.services.api_key_store import APIKeyStore
 from core.discovery.services.arcade_email_service import ArcadeEmailService
 from core.discovery.services.browser_automation_service import BrowserAutomationService
 from core.discovery.llm_logger import invoke_llm_with_logging, AgentLogger
+from core.discovery.skill_registry import get_skill_registry
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,7 @@ class APIKeyAgent:
         )
         self.key_store = APIKeyStore(db_client)
         self.browser_service = None
+        self.skill_registry = get_skill_registry()
 
         # Initialize comprehensive logging
         self.agent_logger = AgentLogger("APIKeyAgent", log_level=logging.INFO)
@@ -99,6 +101,16 @@ class APIKeyAgent:
                 arcade_api_key_set=bool(Config.ARCADE_API_KEY),
                 discovery_email_set=bool(Config.DISCOVERY_EMAIL),
             )
+
+    def _build_system_prompt_with_skills(self, base_prompt: str, task_description: str) -> str:
+        """Build system prompt with task-specific skills."""
+        skills = self.skill_registry.get_skills_for_task('api_key', task_description)
+
+        if skills:
+            skills_text = self.skill_registry.format_skills_for_prompt(skills)
+            return f"{base_prompt}\n\n{skills_text}"
+
+        return base_prompt
 
     def _get_browser_service(self) -> BrowserAutomationService:
         """Get or create the browser automation service."""
@@ -1590,7 +1602,16 @@ Return JSON:
             import time
             start_time = time.time()
 
-            messages = [HumanMessage(content=prompt)]
+            # Get system prompt with task-specific skills
+            system_prompt = self._build_system_prompt_with_skills(
+                """You are a registration page analyzer. Analyze the form and determine if registration can be automated.""",
+                "Analyze registration form for automation feasibility"
+            )
+
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=prompt)
+            ]
             response = invoke_llm_with_logging(
                 self.llm,
                 messages,

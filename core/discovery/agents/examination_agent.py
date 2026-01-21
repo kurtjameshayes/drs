@@ -23,6 +23,7 @@ from ..prompts import EXAMINATION_AGENT_SYSTEM, EXAMINATION_AGENT_TASK
 from ..tools import fetch_url, check_api_availability, detect_access_methods, find_documentation_url
 from ..llm_logger import invoke_llm_with_logging
 from ..utils import extract_first_json_object, sanitize_for_format_string, check_relevance_from_metadata
+from ..skill_registry import get_skill_registry
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,17 @@ class ExaminationAgent:
             api_key=Config.ANTHROPIC_API_KEY,
             temperature=0.2,
         )
+        self.skill_registry = get_skill_registry()
+
+    def _build_system_prompt_with_skills(self, base_prompt: str, task_description: str) -> str:
+        """Build system prompt with task-specific skills."""
+        skills = self.skill_registry.get_skills_for_task('examination', task_description)
+
+        if skills:
+            skills_text = self.skill_registry.format_skills_for_prompt(skills)
+            return f"{base_prompt}\n\n{skills_text}"
+
+        return base_prompt
 
     def _examine_source(
         self, candidate: DataSourceCandidate, user_description: str
@@ -104,9 +116,15 @@ class ExaminationAgent:
         safe_source_description = sanitize_for_format_string(candidate.description)
         safe_user_description = sanitize_for_format_string(user_description)
 
+        # Get system prompt with task-specific skills
+        system_prompt = self._build_system_prompt_with_skills(
+            EXAMINATION_AGENT_SYSTEM,
+            f"Examine {safe_source_name} at {safe_source_url} for data relevance to {safe_user_description}"
+        )
+
         # Use LLM to analyze whether this source provides the desired data
         messages = [
-            SystemMessage(content=EXAMINATION_AGENT_SYSTEM),
+            SystemMessage(content=system_prompt),
             HumanMessage(content=EXAMINATION_AGENT_TASK.format(
                 source_name=safe_source_name,
                 source_url=safe_source_url,

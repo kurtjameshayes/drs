@@ -23,6 +23,7 @@ from ..state import DiscoveryState, DataSourceCandidate, WorkflowError, HumanInp
 from ..prompts import SEARCH_AGENT_SYSTEM, SEARCH_AGENT_TASK
 from ..tools import web_search, search_data_gov, search_apis_guru
 from ..llm_logger import invoke_llm_with_logging
+from ..skill_registry import get_skill_registry
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ class SearchAgent:
             temperature=0.3,
         )
         self.max_results = Config.DISCOVERY_MAX_SEARCH_RESULTS
+        self.skill_registry = get_skill_registry()
 
         if db_client is None:
             db_client = MongoClient(Config.MONGO_URI)
@@ -150,11 +152,21 @@ class SearchAgent:
             })
         return options
 
+    def _build_system_prompt_with_skills(self, base_prompt: str, task_description: str) -> str:
+        """Build system prompt with task-specific skills."""
+        skills = self.skill_registry.get_skills_for_task('search', task_description)
+
+        if skills:
+            skills_text = self.skill_registry.format_skills_for_prompt(skills)
+            return f"{base_prompt}\n\n{skills_text}"
+
+        return base_prompt
+
     def _generate_search_queries(self, user_description: str) -> List[str]:
         """Generate optimized search queries from the user's description."""
-        # Ask LLM to generate search queries
-        messages = [
-            SystemMessage(content="""You are a search query optimizer. Given a user's description
+        # Get system prompt with task-specific skills
+        system_prompt = self._build_system_prompt_with_skills(
+            """You are a search query optimizer. Given a user's description
 of the data they need, generate 3-5 effective search queries to find relevant data sources.
 
 Return the queries as a JSON array of strings. Focus on:
@@ -163,7 +175,13 @@ Return the queries as a JSON array of strings. Focus on:
 - Academic and research data repositories
 - Well-known data providers
 
-Example output: ["query 1", "query 2", "query 3"]"""),
+Example output: ["query 1", "query 2", "query 3"]""",
+            user_description
+        )
+
+        # Ask LLM to generate search queries
+        messages = [
+            SystemMessage(content=system_prompt),
             HumanMessage(content=f"Generate search queries for: {user_description}")
         ]
 
