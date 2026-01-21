@@ -22,7 +22,8 @@ class Skill:
     description: str  # Brief description of what it does
     agent_types: List[str]  # Which agents can use it (e.g., ['search', 'examination'])
     task_keywords: List[str]  # Keywords that trigger this skill (e.g., ['search', 'find'])
-    prompt_template: str  # How to describe it to the LLM
+    prompt_template: Optional[str] = None  # How to describe it to the LLM (inline)
+    prompt_file: Optional[str] = None  # Path to SKILL.md file (file-based, takes precedence)
     requires_config: Optional[str] = None  # Config key needed (e.g., 'TAVILY_API_KEY')
 
 
@@ -32,10 +33,15 @@ class SkillRegistry:
 
     Skills are loaded from disk (SKILL.md files in skills directory) and can be
     selected based on agent type and task keywords.
+
+    Skills can use either:
+    - prompt_template: Inline text description
+    - prompt_file: Path to SKILL.md file (takes precedence)
     """
 
     def __init__(self):
         self.skills: Dict[str, Skill] = {}
+        self._file_cache: Dict[str, str] = {}  # Cache for loaded SKILL.md files
         self._load_default_skills()
         self._load_skills_from_disk()
 
@@ -95,7 +101,7 @@ class SkillRegistry:
             description='Identify and classify form fields',
             agent_types=['examination', 'api_key'],
             task_keywords=['form', 'field', 'input', 'required', 'optional'],
-            prompt_template='You can identify HTML form fields, classify them as required or optional, detect field types, and understand form structure.',
+            prompt_file='core/discovery/skills/api-acquisition-request-page-analyze/SKILL.md',
         )
 
         self.skills['fetch_content'] = Skill(
@@ -121,6 +127,42 @@ class SkillRegistry:
             task_keywords=['error', 'fail', 'recover', 'retry', 'problem', 'issue'],
             prompt_template='You can analyze errors and failures, identify root causes, and recommend appropriate recovery or retry strategies.',
         )
+
+    def _load_skill_file_content(self, file_path: str) -> Optional[str]:
+        """
+        Load and cache the content of a SKILL.md file.
+
+        Args:
+            file_path: Relative path to SKILL.md file (e.g., 'core/discovery/skills/api-acquisition-request-page-analyze/SKILL.md')
+
+        Returns:
+            File content as string, or None if file not found
+        """
+        # Check cache first
+        if file_path in self._file_cache:
+            return self._file_cache[file_path]
+
+        try:
+            # Resolve path relative to project root
+            full_path = Path(__file__).parent.parent.parent / file_path
+
+            if not full_path.exists():
+                logger.warning(f"Skill file not found: {full_path}")
+                return None
+
+            # Read file content
+            with open(full_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            # Cache it
+            self._file_cache[file_path] = content
+            logger.debug(f"Loaded skill file: {file_path}")
+
+            return content
+
+        except Exception as e:
+            logger.error(f"Failed to load skill file {file_path}: {e}")
+            return None
 
     def _load_skills_from_disk(self):
         """Load additional skills from SKILL.md files in the skills directory."""
@@ -220,6 +262,8 @@ class SkillRegistry:
         """
         Format a list of skills for inclusion in an LLM prompt.
 
+        For each skill, uses prompt_file content if available, otherwise uses prompt_template.
+
         Args:
             skills: List of Skill objects
 
@@ -229,11 +273,22 @@ class SkillRegistry:
         if not skills:
             return ""
 
-        lines = ["AVAILABLE CAPABILITIES:"]
-        for skill in skills:
-            lines.append(f"- {skill.name}: {skill.prompt_template}")
+        skill_contents = []
 
-        return "\n".join(lines)
+        for skill in skills:
+            # Prefer file-based prompt over inline template
+            if skill.prompt_file:
+                file_content = self._load_skill_file_content(skill.prompt_file)
+                if file_content:
+                    skill_contents.append(file_content)
+                    continue
+
+            # Fall back to inline template
+            if skill.prompt_template:
+                skill_contents.append(f"## {skill.name.replace('_', ' ').title()}\n{skill.prompt_template}")
+
+        # Join all skill contents with section breaks
+        return "\n\n---\n\n".join(skill_contents) if skill_contents else ""
 
     def get_all_skills(self) -> Dict[str, Skill]:
         """Get all registered skills."""
