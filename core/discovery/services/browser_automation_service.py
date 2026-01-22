@@ -22,11 +22,16 @@ class BrowserAutomationService:
 
     Provides functions for:
     - Navigating to URLs
-    - Getting page content
+    - Getting page content (with JavaScript execution)
     - Clicking elements
     - Filling form fields
     - Submitting forms
     - Taking screenshots
+
+    IMPORTANT: All XPath and CSS selector operations in this service operate on the
+    live DOM with JavaScript fully executed. This ensures that dynamically-generated
+    content is included when selecting elements. Never use static HTML from requests
+    library or BeautifulSoup for XPath operations - always use Selenium's live DOM.
     """
 
     def __init__(self, headless: bool = True, timeout: int = 30):
@@ -124,10 +129,14 @@ class BrowserAutomationService:
 
     def get_page_content(self) -> Dict[str, Any]:
         """
-        Get the current page's content.
+        Get the current page's content with JavaScript-rendered HTML.
+
+        This method executes JavaScript to capture the fully-rendered DOM, including
+        all dynamically-generated content. The returned HTML is suitable for XPath
+        queries and other HTML analysis operations.
 
         Returns:
-            Dict with page HTML, visible text, and metadata
+            Dict with page HTML (JavaScript-rendered), visible text, and metadata
         """
         self._ensure_driver()
 
@@ -135,6 +144,8 @@ class BrowserAutomationService:
             from selenium.webdriver.common.by import By
 
             # Get the rendered DOM after JavaScript execution
+            # CRITICAL: This captures all JavaScript-generated content, making it suitable
+            # for XPath operations and HTML analysis
             html_content = self.driver.execute_script("return document.documentElement.outerHTML")
 
             # Strip <head> element before processing
@@ -168,6 +179,8 @@ class BrowserAutomationService:
 
         Args:
             selector: CSS selector, XPath, or text content to find the element
+                     These selectors operate on the live DOM with JavaScript fully executed,
+                     so all dynamically-generated content is included.
 
         Returns:
             Result dict with success status
@@ -183,6 +196,8 @@ class BrowserAutomationService:
             element = None
 
             # Try different strategies to find the element
+            # All strategies (XPath, CSS selector, etc.) operate on the live Selenium DOM
+            # with JavaScript fully executed, ensuring dynamic content is included
             strategies = []
 
             # If it looks like an XPath, try it first
@@ -250,6 +265,8 @@ class BrowserAutomationService:
 
         Args:
             selector: CSS selector, name, or ID of the form field
+                     XPath and CSS selectors operate on the live DOM with JavaScript
+                     fully executed, ensuring dynamic form fields are included.
             value: Value to fill in
 
         Returns:
@@ -266,6 +283,8 @@ class BrowserAutomationService:
             element = None
 
             # Try different strategies to find the input field
+            # All strategies including XPath operate on the live Selenium DOM
+            # with JavaScript fully executed
             strategies = [
                 (By.CSS_SELECTOR, selector),
                 (By.NAME, selector),
@@ -315,6 +334,7 @@ class BrowserAutomationService:
         Args:
             selector: Optional CSS selector for the form or submit button.
                      If not provided, attempts to find a submit button.
+                     All selectors operate on the live DOM with JavaScript fully executed.
 
         Returns:
             Result dict with success status
@@ -336,7 +356,7 @@ class BrowserAutomationService:
                         "current_url": self.driver.current_url,
                     }
 
-            # Try common submit button patterns
+            # Try common submit button patterns using XPath on the live, JavaScript-rendered DOM
             submit_patterns = [
                 "//button[@type='submit']",
                 "//input[@type='submit']",
@@ -353,6 +373,7 @@ class BrowserAutomationService:
 
             for pattern in submit_patterns:
                 try:
+                    # XPath executed on live DOM with JavaScript fully executed
                     element = wait.until(EC.element_to_be_clickable((By.XPATH, pattern)))
                     self.driver.execute_script("arguments[0].scrollIntoView(true);", element)
                     time.sleep(0.5)
@@ -383,6 +404,9 @@ class BrowserAutomationService:
         """
         Get all links on the current page.
 
+        Operates on the live DOM with JavaScript fully executed, ensuring that
+        all dynamically-generated links are included.
+
         Returns:
             Dict with list of links (text and URL)
         """
@@ -392,6 +416,7 @@ class BrowserAutomationService:
             from selenium.webdriver.common.by import By
 
             links = []
+            # Find all links on the live, JavaScript-rendered DOM
             elements = self.driver.find_elements(By.TAG_NAME, "a")
 
             for element in elements:
@@ -461,6 +486,10 @@ class BrowserAutomationService:
         """
         Search the current page for potential API key displays or generation buttons.
 
+        All XPath patterns are executed on the live DOM with JavaScript fully rendered,
+        ensuring that dynamically-generated API key elements (e.g., generated after form
+        submission or AJAX calls) are included in the search.
+
         Returns:
             Dict with found elements that might relate to API keys
         """
@@ -476,7 +505,7 @@ class BrowserAutomationService:
                 "api_links": [],
             }
 
-            # Look for displayed API keys
+            # Look for displayed API keys using XPath on the live, JavaScript-rendered DOM
             key_patterns = [
                 "//code",
                 "//*[contains(@class, 'api-key')]",
@@ -492,6 +521,7 @@ class BrowserAutomationService:
 
             for pattern in key_patterns:
                 try:
+                    # XPath executed on live DOM with JavaScript fully executed
                     elements = self.driver.find_elements(By.XPATH, pattern)
                     for el in elements:
                         text = el.text.strip() or el.get_attribute("value") or ""
@@ -563,6 +593,9 @@ class BrowserAutomationService:
         """
         Find all form fields on the current page.
 
+        Searches are performed on the live DOM with JavaScript fully executed,
+        ensuring all dynamically-generated form fields are discovered.
+
         Returns:
             Dict with list of form fields and their properties
         """
@@ -573,7 +606,7 @@ class BrowserAutomationService:
 
             fields = []
 
-            # Find all input elements
+            # Find all input elements using live DOM with JavaScript fully executed
             input_types = ["input", "textarea", "select"]
 
             for tag in input_types:
@@ -609,11 +642,16 @@ class BrowserAutomationService:
             }
 
     def _find_label_for_element(self, element) -> Optional[str]:
-        """Find the label text for a form element."""
+        """
+        Find the label text for a form element.
+
+        Uses XPath on the live DOM with JavaScript fully executed to find associated
+        label elements, including any dynamically-generated labels.
+        """
         try:
             from selenium.webdriver.common.by import By
 
-            # Check for associated label via 'for' attribute
+            # Check for associated label via 'for' attribute using XPath on live DOM
             el_id = element.get_attribute("id")
             if el_id:
                 labels = self.driver.find_elements(By.XPATH, f"//label[@for='{el_id}']")
@@ -636,6 +674,8 @@ class BrowserAutomationService:
 
         Args:
             selector: CSS selector or XPath for the element
+                     Selectors operate on the live DOM with JavaScript fully executed,
+                     detecting elements that appear after dynamic content generation.
             timeout: Maximum time to wait in seconds
 
         Returns:
@@ -651,6 +691,7 @@ class BrowserAutomationService:
 
             wait = WebDriverWait(self.driver, timeout)
 
+            # All selector strategies operate on the live DOM with JavaScript executed
             strategies = [
                 (By.CSS_SELECTOR, selector),
                 (By.XPATH, selector),

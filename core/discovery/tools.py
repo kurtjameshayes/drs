@@ -3,6 +3,15 @@ Shared tools for the LangGraph data source discovery workflow.
 
 This module provides tools for web searching, URL fetching, and HTTP requests
 that can be used by the various agents in the workflow.
+
+IMPORTANT: Methods in this module (fetch_url, search_data_gov, etc.) use the
+requests library and BeautifulSoup to parse static HTML. These methods DO NOT
+execute JavaScript. If you need to analyze HTML content with XPath or perform
+interactive browser operations, use BrowserAutomationService instead.
+
+For XPath operations on HTML content:
+- ALWAYS use BrowserAutomationService.get_page_content() which executes JavaScript
+- NEVER use static HTML from requests library with XPath queries
 """
 
 import logging
@@ -224,14 +233,18 @@ def search_apis_guru(query: str) -> List[Dict[str, Any]]:
 @tool
 def fetch_url(url: str, extract_links: bool = True) -> Dict[str, Any]:
     """
-    Fetch a URL and extract its content.
+    Fetch a URL and extract its content (static HTML, NO JavaScript execution).
+
+    This method uses requests library and returns the initial HTML only, without
+    executing any JavaScript. For content that requires JavaScript execution or
+    XPath-based analysis, use BrowserAutomationService.get_page_content() instead.
 
     Args:
         url: URL to fetch
         extract_links: Whether to extract links from the page
 
     Returns:
-        Dictionary with page content, title, and optionally links
+        Dictionary with page content (static HTML), title, and optionally links
     """
     try:
         headers = {
