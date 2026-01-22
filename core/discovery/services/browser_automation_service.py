@@ -1,8 +1,9 @@
 """
 Browser Automation Service
 
-Service for automating web browser interactions using Selenium.
+Service for automating web browser interactions using Playwright.
 Used to navigate websites, fill forms, and extract API keys.
+Includes native Shadow DOM support for extracting content from Shadow DOM elements.
 """
 
 import logging
@@ -18,20 +19,25 @@ logger = logging.getLogger(__name__)
 
 class BrowserAutomationService:
     """
-    Service for browser automation using Selenium WebDriver.
+    Service for browser automation using Playwright.
 
     Provides functions for:
     - Navigating to URLs
-    - Getting page content (with JavaScript execution)
-    - Clicking elements
-    - Filling form fields
+    - Getting page content (with JavaScript execution and Shadow DOM extraction)
+    - Clicking elements (including those in Shadow DOM)
+    - Filling form fields (including those in Shadow DOM)
     - Submitting forms
     - Taking screenshots
 
     IMPORTANT: All XPath and CSS selector operations in this service operate on the
     live DOM with JavaScript fully executed. This ensures that dynamically-generated
-    content is included when selecting elements. Never use static HTML from requests
-    library or BeautifulSoup for XPath operations - always use Selenium's live DOM.
+    content is included when selecting elements. Shadow DOM content is automatically
+    extracted and included in page content operations.
+
+    Shadow DOM Support:
+    - Playwright provides native Shadow DOM piercing with '>>' selectors
+    - get_page_content() automatically extracts all Shadow DOM content recursively
+    - Element selectors can pierce Shadow DOM boundaries using Playwright's syntax
     """
 
     def __init__(self, headless: bool = True, timeout: int = 30):
@@ -44,53 +50,58 @@ class BrowserAutomationService:
         """
         self.headless = headless
         self.timeout = timeout
-        self.driver = None
+        self.browser = None
+        self.context = None
+        self.page = None
+        self.playwright = None
         self._initialized = False
 
     def _ensure_driver(self):
-        """Initialize the WebDriver if not already initialized."""
-        if self._initialized and self.driver:
+        """Initialize the Playwright browser if not already initialized."""
+        if self._initialized and self.page:
             return
 
         try:
-            from selenium import webdriver
-            from selenium.webdriver.chrome.options import Options
-            from selenium.webdriver.chrome.service import Service
+            from playwright.sync_api import sync_playwright
 
-            chrome_options = Options()
+            # Start Playwright
+            self.playwright = sync_playwright().start()
 
-            if self.headless:
-                chrome_options.add_argument("--headless=new")
-
-            # Common options for stability
-            chrome_options.add_argument("--no-sandbox")
-            chrome_options.add_argument("--disable-dev-shm-usage")
-            chrome_options.add_argument("--disable-gpu")
-            chrome_options.add_argument("--window-size=1920,1080")
-            chrome_options.add_argument("--disable-extensions")
-            chrome_options.add_argument("--disable-popup-blocking")
-            chrome_options.add_argument("--ignore-certificate-errors")
-
-            # User agent to appear as a regular browser
-            chrome_options.add_argument(
-                "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            # Launch browser
+            self.browser = self.playwright.chromium.launch(
+                headless=self.headless,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                ]
             )
 
-            self.driver = webdriver.Chrome(options=chrome_options)
-            self.driver.set_page_load_timeout(self.timeout)
-            self.driver.implicitly_wait(10)
+            # Create context with custom user agent
+            self.context = self.browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                viewport={"width": 1920, "height": 1080},
+                ignore_https_errors=True,
+            )
+
+            # Set default timeout
+            self.context.set_default_timeout(self.timeout * 1000)  # Convert to milliseconds
+
+            # Create page
+            self.page = self.context.new_page()
+
             self._initialized = True
 
-            logger.info("Browser automation service initialized successfully")
+            logger.info("Browser automation service initialized successfully with Playwright")
 
         except ImportError as e:
             logger.error(
-                "selenium not installed. Install with: pip install selenium"
+                "playwright not installed. Install with: pip install playwright && playwright install chromium"
             )
             raise ImportError(
-                "selenium package is required for Browser Automation Service. "
-                "Install with: pip install selenium"
+                "playwright package is required for Browser Automation Service. "
+                "Install with: pip install playwright && playwright install chromium"
             ) from e
         except Exception as e:
             logger.error(f"Failed to initialize browser: {e}")
@@ -110,15 +121,15 @@ class BrowserAutomationService:
 
         try:
             logger.info(f"Navigating to: {url}")
-            self.driver.get(url)
+            self.page.goto(url, wait_until="domcontentloaded")
 
-            # Wait for page to load
+            # Wait for page to stabilize (including JavaScript execution)
             time.sleep(2)
 
             return {
                 "success": True,
-                "current_url": self.driver.current_url,
-                "title": self.driver.title,
+                "current_url": self.page.url,
+                "title": self.page.title(),
             }
         except Exception as e:
             logger.error(f"Failed to navigate to {url}: {e}")
@@ -129,35 +140,121 @@ class BrowserAutomationService:
 
     def get_page_content(self) -> Dict[str, Any]:
         """
-        Get the current page's content with JavaScript-rendered HTML.
+        Get the current page's content with JavaScript-rendered HTML and Shadow DOM extraction.
 
-        This method executes JavaScript to capture the fully-rendered DOM, including
-        all dynamically-generated content. The returned HTML is suitable for XPath
-        queries and other HTML analysis operations.
+        This method executes JavaScript to capture the fully-rendered DOM, including:
+        - All dynamically-generated content
+        - ALL Shadow DOM content (recursively extracted)
+        - Nested Shadow DOM structures
+
+        The Shadow DOM extraction process:
+        1. Finds all elements with shadowRoot property
+        2. Recursively extracts Shadow DOM content
+        3. Merges Shadow DOM HTML into the main document structure
 
         Returns:
-            Dict with page HTML (JavaScript-rendered), visible text, and metadata
+            Dict with page HTML (JavaScript-rendered + Shadow DOM), visible text, and metadata
         """
         self._ensure_driver()
 
         try:
-            from selenium.webdriver.common.by import By
+            # JavaScript to recursively extract all Shadow DOM content
+            shadow_dom_extraction_script = """
+            function extractAllShadowDOM() {
+                // Recursive function to extract shadow DOM content
+                function extractShadowContent(element) {
+                    if (!element || !element.shadowRoot) {
+                        return null;
+                    }
+
+                    // Get the shadow root HTML
+                    let shadowHTML = element.shadowRoot.innerHTML;
+
+                    // Find nested shadow DOM elements within this shadow root
+                    const shadowElements = element.shadowRoot.querySelectorAll('*');
+                    shadowElements.forEach(child => {
+                        if (child.shadowRoot) {
+                            const nestedContent = extractShadowContent(child);
+                            if (nestedContent) {
+                                // Inject nested shadow content into the HTML
+                                shadowHTML = shadowHTML.replace(
+                                    child.outerHTML,
+                                    child.outerHTML + '<!-- SHADOW-ROOT: -->' + nestedContent
+                                );
+                            }
+                        }
+                    });
+
+                    return shadowHTML;
+                }
+
+                // Find all elements with shadow roots in the main document
+                const allElements = document.querySelectorAll('*');
+                const shadowHosts = [];
+
+                allElements.forEach(element => {
+                    if (element.shadowRoot) {
+                        const shadowContent = extractShadowContent(element);
+                        if (shadowContent) {
+                            shadowHosts.push({
+                                selector: element.className ? '.' + element.className.split(' ').join('.') : element.tagName,
+                                html: shadowContent,
+                                element: element.outerHTML
+                            });
+                        }
+                    }
+                });
+
+                return shadowHosts;
+            }
+
+            return extractAllShadowDOM();
+            """
 
             # Get the rendered DOM after JavaScript execution
-            # CRITICAL: This captures all JavaScript-generated content, making it suitable
-            # for XPath operations and HTML analysis
-            html_content = self.driver.execute_script("return document.documentElement.outerHTML")
+            html_content = self.page.evaluate("document.documentElement.outerHTML")
+
+            # Extract Shadow DOM content
+            shadow_doms = self.page.evaluate(shadow_dom_extraction_script)
+
+            # Inject Shadow DOM content into the HTML
+            if shadow_doms and len(shadow_doms) > 0:
+                logger.info(f"Found {len(shadow_doms)} Shadow DOM roots")
+                for shadow_dom in shadow_doms:
+                    # Find the shadow host element in the HTML and inject its content
+                    shadow_host_html = shadow_dom.get('element', '')
+                    shadow_content = shadow_dom.get('html', '')
+
+                    if shadow_host_html and shadow_content:
+                        # Insert shadow content after the shadow host element
+                        # This makes it accessible for XPath and other HTML analysis
+                        replacement = f"{shadow_host_html}\n<!-- SHADOW DOM CONTENT -->\n{shadow_content}\n<!-- END SHADOW DOM -->"
+                        html_content = html_content.replace(shadow_host_html, replacement, 1)
 
             # Strip <head> element before processing
             html_content = re.sub(r'<head[^>]*>.*?</head>', '', html_content, flags=re.IGNORECASE | re.DOTALL)
 
             # Get visible text (excluding scripts and styles)
-            body = self.driver.find_element(By.TAG_NAME, "body")
-            visible_text = body.text
+            visible_text = self.page.evaluate("""
+                () => {
+                    // Get text from main document
+                    let text = document.body.innerText;
+
+                    // Also get text from Shadow DOM
+                    const shadowHosts = document.querySelectorAll('*');
+                    shadowHosts.forEach(element => {
+                        if (element.shadowRoot) {
+                            text += '\\n' + element.shadowRoot.textContent;
+                        }
+                    });
+
+                    return text;
+                }
+            """)
 
             # Get page metadata
-            title = self.driver.title
-            current_url = self.driver.current_url
+            title = self.page.title()
+            current_url = self.page.url
 
             return {
                 "success": True,
@@ -177,6 +274,10 @@ class BrowserAutomationService:
         """
         Click on an element identified by CSS selector, XPath, or text content.
 
+        Supports Shadow DOM piercing:
+        - Use >> syntax to pierce Shadow DOM: '.shadow-host >> #button'
+        - Playwright automatically handles Shadow DOM boundaries
+
         Args:
             selector: CSS selector, XPath, or text content to find the element
                      These selectors operate on the live DOM with JavaScript fully executed,
@@ -188,68 +289,53 @@ class BrowserAutomationService:
         self._ensure_driver()
 
         try:
-            from selenium.webdriver.common.by import By
-            from selenium.webdriver.support.ui import WebDriverWait
-            from selenium.webdriver.support import expected_conditions as EC
-            from selenium.common.exceptions import TimeoutException
-
             element = None
+            error_messages = []
 
             # Try different strategies to find the element
-            # All strategies (XPath, CSS selector, etc.) operate on the live Selenium DOM
-            # with JavaScript fully executed, ensuring dynamic content is included
             strategies = []
 
             # If it looks like an XPath, try it first
             if selector.startswith("//") or selector.startswith("("):
-                strategies.append((By.XPATH, selector))
+                strategies.append(("xpath", selector))
 
-            # Then try other strategies
-            strategies.extend([
-                # CSS selector
-                (By.CSS_SELECTOR, selector),
-                # XPath for exact text match
-                (By.XPATH, f"//*[text()='{selector}']"),
-                # XPath for partial text match
-                (By.XPATH, f"//*[contains(text(), '{selector}')]"),
-                # Link text
-                (By.LINK_TEXT, selector),
-                # Partial link text
-                (By.PARTIAL_LINK_TEXT, selector),
-                # ID
-                (By.ID, selector),
-                # Name
-                (By.NAME, selector),
-            ])
+            # CSS selector (may include >> for Shadow DOM piercing)
+            strategies.append(("css", selector))
 
-            wait = WebDriverWait(self.driver, 10)
+            # Text content strategies
+            strategies.append(("text", selector))
+            strategies.append(("text", f"*{selector}*"))  # Partial match
 
-            for by_type, locator in strategies:
+            for strategy_type, locator in strategies:
                 try:
-                    element = wait.until(EC.element_to_be_clickable((by_type, locator)))
-                    break
-                except TimeoutException:
+                    if strategy_type == "xpath":
+                        element = self.page.locator(f"xpath={locator}").first
+                    elif strategy_type == "css":
+                        element = self.page.locator(locator).first
+                    elif strategy_type == "text":
+                        element = self.page.get_by_text(locator).first
+
+                    # Check if element exists and is visible
+                    if element and element.count() > 0:
+                        # Scroll into view and click
+                        element.scroll_into_view_if_needed()
+                        element.click(timeout=10000)
+
+                        # Wait for any navigation or updates
+                        time.sleep(1)
+
+                        logger.info(f"Clicked element: {selector}")
+                        return {
+                            "success": True,
+                            "current_url": self.page.url,
+                        }
+                except Exception as e:
+                    error_messages.append(f"{strategy_type}={locator}: {str(e)}")
                     continue
 
-            if element is None:
-                return {
-                    "success": False,
-                    "error": f"Could not find clickable element: {selector}",
-                }
-
-            # Scroll element into view
-            self.driver.execute_script("arguments[0].scrollIntoView(true);", element)
-            time.sleep(0.5)
-
-            element.click()
-
-            # Wait for any navigation or updates
-            time.sleep(1)
-
-            logger.info(f"Clicked element: {selector}")
             return {
-                "success": True,
-                "current_url": self.driver.current_url,
+                "success": False,
+                "error": f"Could not find clickable element: {selector}. Tried: {'; '.join(error_messages)}",
             }
 
         except Exception as e:
@@ -263,6 +349,10 @@ class BrowserAutomationService:
         """
         Fill a form field with the provided value.
 
+        Supports Shadow DOM piercing:
+        - Use >> syntax to pierce Shadow DOM: '.shadow-host >> input[name="email"]'
+        - Playwright automatically handles Shadow DOM boundaries
+
         Args:
             selector: CSS selector, name, or ID of the form field
                      XPath and CSS selectors operate on the live DOM with JavaScript
@@ -275,49 +365,44 @@ class BrowserAutomationService:
         self._ensure_driver()
 
         try:
-            from selenium.webdriver.common.by import By
-            from selenium.webdriver.support.ui import WebDriverWait
-            from selenium.webdriver.support import expected_conditions as EC
-            from selenium.common.exceptions import TimeoutException
-
             element = None
+            error_messages = []
 
             # Try different strategies to find the input field
-            # All strategies including XPath operate on the live Selenium DOM
-            # with JavaScript fully executed
             strategies = [
-                (By.CSS_SELECTOR, selector),
-                (By.NAME, selector),
-                (By.ID, selector),
-                (By.XPATH, f"//input[@name='{selector}']"),
-                (By.XPATH, f"//input[@id='{selector}']"),
-                (By.XPATH, f"//input[@placeholder='{selector}']"),
-                (By.XPATH, f"//textarea[@name='{selector}']"),
-                (By.XPATH, f"//textarea[@id='{selector}']"),
+                ("css", selector),
+                ("css", f"[name='{selector}']"),
+                ("css", f"#{selector}"),
+                ("xpath", f"//input[@name='{selector}']"),
+                ("xpath", f"//input[@id='{selector}']"),
+                ("xpath", f"//input[@placeholder='{selector}']"),
+                ("xpath", f"//textarea[@name='{selector}']"),
+                ("xpath", f"//textarea[@id='{selector}']"),
             ]
 
-            wait = WebDriverWait(self.driver, 10)
-
-            for by_type, locator in strategies:
+            for strategy_type, locator in strategies:
                 try:
-                    element = wait.until(EC.presence_of_element_located((by_type, locator)))
-                    break
-                except TimeoutException:
+                    if strategy_type == "xpath":
+                        element = self.page.locator(f"xpath={locator}").first
+                    else:
+                        element = self.page.locator(locator).first
+
+                    # Check if element exists
+                    if element and element.count() > 0:
+                        # Fill the field
+                        element.fill(value, timeout=10000)
+
+                        logger.info(f"Filled form field {selector}")
+                        return {
+                            "success": True,
+                        }
+                except Exception as e:
+                    error_messages.append(f"{strategy_type}={locator}: {str(e)}")
                     continue
 
-            if element is None:
-                return {
-                    "success": False,
-                    "error": f"Could not find form field: {selector}",
-                }
-
-            # Clear existing value and type new value
-            element.clear()
-            element.send_keys(value)
-
-            logger.info(f"Filled form field {selector}")
             return {
-                "success": True,
+                "success": False,
+                "error": f"Could not find form field: {selector}. Tried: {'; '.join(error_messages)}",
             }
 
         except Exception as e:
@@ -331,6 +416,8 @@ class BrowserAutomationService:
         """
         Submit a form.
 
+        Supports Shadow DOM piercing for submit buttons inside Shadow DOM.
+
         Args:
             selector: Optional CSS selector for the form or submit button.
                      If not provided, attempts to find a submit button.
@@ -342,10 +429,6 @@ class BrowserAutomationService:
         self._ensure_driver()
 
         try:
-            from selenium.webdriver.common.by import By
-            from selenium.webdriver.support.ui import WebDriverWait
-            from selenium.webdriver.support import expected_conditions as EC
-
             if selector:
                 # Try to find the specified element
                 result = self.click_element(selector)
@@ -353,38 +436,36 @@ class BrowserAutomationService:
                     time.sleep(2)
                     return {
                         "success": True,
-                        "current_url": self.driver.current_url,
+                        "current_url": self.page.url,
                     }
 
-            # Try common submit button patterns using XPath on the live, JavaScript-rendered DOM
+            # Try common submit button patterns
             submit_patterns = [
-                "//button[@type='submit']",
-                "//input[@type='submit']",
-                "//button[contains(text(), 'Submit')]",
-                "//button[contains(text(), 'Sign Up')]",
-                "//button[contains(text(), 'Register')]",
-                "//button[contains(text(), 'Get')]",
-                "//button[contains(text(), 'Request')]",
-                "//input[@value='Submit']",
-                "//a[contains(text(), 'Submit')]",
+                "button[type='submit']",
+                "input[type='submit']",
+                "xpath=//button[@type='submit']",
+                "xpath=//input[@type='submit']",
+                "xpath=//button[contains(text(), 'Submit')]",
+                "xpath=//button[contains(text(), 'Sign Up')]",
+                "xpath=//button[contains(text(), 'Register')]",
+                "xpath=//button[contains(text(), 'Get')]",
+                "xpath=//button[contains(text(), 'Request')]",
+                "xpath=//input[@value='Submit']",
             ]
-
-            wait = WebDriverWait(self.driver, 5)
 
             for pattern in submit_patterns:
                 try:
-                    # XPath executed on live DOM with JavaScript fully executed
-                    element = wait.until(EC.element_to_be_clickable((By.XPATH, pattern)))
-                    self.driver.execute_script("arguments[0].scrollIntoView(true);", element)
-                    time.sleep(0.5)
-                    element.click()
-                    time.sleep(2)
+                    element = self.page.locator(pattern).first
+                    if element and element.count() > 0:
+                        element.scroll_into_view_if_needed()
+                        element.click(timeout=5000)
+                        time.sleep(2)
 
-                    logger.info(f"Submitted form using pattern: {pattern}")
-                    return {
-                        "success": True,
-                        "current_url": self.driver.current_url,
-                    }
+                        logger.info(f"Submitted form using pattern: {pattern}")
+                        return {
+                            "success": True,
+                            "current_url": self.page.url,
+                        }
                 except Exception:
                     continue
 
@@ -405,7 +486,8 @@ class BrowserAutomationService:
         Get all links on the current page.
 
         Operates on the live DOM with JavaScript fully executed, ensuring that
-        all dynamically-generated links are included.
+        all dynamically-generated links are included. Also extracts links from
+        Shadow DOM.
 
         Returns:
             Dict with list of links (text and URL)
@@ -413,30 +495,42 @@ class BrowserAutomationService:
         self._ensure_driver()
 
         try:
-            from selenium.webdriver.common.by import By
+            # Get links from main document and Shadow DOM
+            links_data = self.page.evaluate("""
+                () => {
+                    const links = [];
 
-            links = []
-            # Find all links on the live, JavaScript-rendered DOM
-            elements = self.driver.find_elements(By.TAG_NAME, "a")
+                    // Get links from main document
+                    document.querySelectorAll('a').forEach(a => {
+                        const href = a.href;
+                        const text = a.innerText.trim() || a.title || '';
+                        if (href && text) {
+                            links.push({ text, url: href });
+                        }
+                    });
 
-            for element in elements:
-                try:
-                    href = element.get_attribute("href")
-                    text = element.text.strip() or element.get_attribute("title") or ""
+                    // Get links from Shadow DOM
+                    document.querySelectorAll('*').forEach(element => {
+                        if (element.shadowRoot) {
+                            element.shadowRoot.querySelectorAll('a').forEach(a => {
+                                const href = a.href;
+                                const text = a.innerText.trim() || a.title || '';
+                                if (href && text) {
+                                    links.push({ text, url: href });
+                                }
+                            });
+                        }
+                    });
 
-                    if href and text:
-                        links.append({
-                            "text": text,
-                            "url": href,
-                        })
-                except Exception:
-                    continue
+                    return links;
+                }
+            """)
 
-            logger.info(f"Found {len(links)} links on page")
+            logger.info(f"Found {len(links_data)} links on page")
             return {
                 "success": True,
-                "links": links,
-                "count": len(links),
+                "links": links_data,
+                "count": len(links_data),
             }
 
         except Exception as e:
@@ -461,14 +555,15 @@ class BrowserAutomationService:
 
         try:
             if filepath:
-                self.driver.save_screenshot(filepath)
+                self.page.screenshot(path=filepath)
                 logger.info(f"Screenshot saved to: {filepath}")
                 return {
                     "success": True,
                     "filepath": filepath,
                 }
             else:
-                screenshot_base64 = self.driver.get_screenshot_as_base64()
+                screenshot_bytes = self.page.screenshot()
+                screenshot_base64 = base64.b64encode(screenshot_bytes).decode('utf-8')
                 logger.info("Screenshot captured as base64")
                 return {
                     "success": True,
@@ -486,9 +581,9 @@ class BrowserAutomationService:
         """
         Search the current page for potential API key displays or generation buttons.
 
-        All XPath patterns are executed on the live DOM with JavaScript fully rendered,
+        All patterns are executed on the live DOM with JavaScript fully rendered,
         ensuring that dynamically-generated API key elements (e.g., generated after form
-        submission or AJAX calls) are included in the search.
+        submission or AJAX calls) are included in the search. Also searches Shadow DOM.
 
         Returns:
             Dict with found elements that might relate to API keys
@@ -496,86 +591,95 @@ class BrowserAutomationService:
         self._ensure_driver()
 
         try:
-            from selenium.webdriver.common.by import By
+            # Use JavaScript to search both main DOM and Shadow DOM
+            results = self.page.evaluate("""
+                () => {
+                    const results = {
+                        api_key_displays: [],
+                        generate_buttons: [],
+                        api_links: []
+                    };
 
-            results = {
-                "success": True,
-                "api_key_displays": [],
-                "generate_buttons": [],
-                "api_links": [],
-            }
+                    // Helper to search within a root (document or shadow root)
+                    function searchInRoot(root) {
+                        // Look for API key displays
+                        const keySelectors = [
+                            'code',
+                            '[class*="api-key"]',
+                            '[class*="apikey"]',
+                            '[class*="token"]',
+                            '[class*="key"]',
+                            'pre',
+                            'input[type="text"][readonly]',
+                            '[id*="api"]',
+                            '[id*="key"]',
+                            '[id*="token"]'
+                        ];
 
-            # Look for displayed API keys using XPath on the live, JavaScript-rendered DOM
-            key_patterns = [
-                "//code",
-                "//*[contains(@class, 'api-key')]",
-                "//*[contains(@class, 'apikey')]",
-                "//*[contains(@class, 'token')]",
-                "//*[contains(@class, 'key')]",
-                "//pre",
-                "//input[@type='text' and @readonly]",
-                "//*[contains(@id, 'api')]",
-                "//*[contains(@id, 'key')]",
-                "//*[contains(@id, 'token')]",
-            ]
+                        keySelectors.forEach(selector => {
+                            try {
+                                root.querySelectorAll(selector).forEach(el => {
+                                    const text = el.innerText?.trim() || el.value?.trim() || '';
+                                    if (text && text.length > 15 && text.length < 200) {
+                                        results.api_key_displays.push({
+                                            text: text,
+                                            tag: el.tagName.toLowerCase()
+                                        });
+                                    }
+                                });
+                            } catch (e) {}
+                        });
 
-            for pattern in key_patterns:
-                try:
-                    # XPath executed on live DOM with JavaScript fully executed
-                    elements = self.driver.find_elements(By.XPATH, pattern)
-                    for el in elements:
-                        text = el.text.strip() or el.get_attribute("value") or ""
-                        if text and len(text) > 15 and len(text) < 200:
-                            # Looks like it could be an API key
-                            results["api_key_displays"].append({
-                                "text": text,
-                                "tag": el.tag_name,
-                            })
-                except Exception:
-                    continue
+                        // Look for generate/create buttons
+                        const buttonTexts = ['Generate', 'Create', 'New Key', 'Get API Key', 'Request Key'];
+                        buttonTexts.forEach(buttonText => {
+                            try {
+                                root.querySelectorAll('button, a').forEach(el => {
+                                    if (el.innerText?.includes(buttonText)) {
+                                        results.generate_buttons.push({
+                                            text: el.innerText.trim(),
+                                            tag: el.tagName.toLowerCase()
+                                        });
+                                    }
+                                });
+                            } catch (e) {}
+                        });
 
-            # Look for generate/create key buttons
-            button_patterns = [
-                "//button[contains(text(), 'Generate')]",
-                "//button[contains(text(), 'Create')]",
-                "//a[contains(text(), 'Generate')]",
-                "//a[contains(text(), 'Create')]",
-                "//*[contains(text(), 'New Key')]",
-                "//*[contains(text(), 'Get API Key')]",
-                "//*[contains(text(), 'Request Key')]",
-            ]
+                        // Look for API-related links
+                        const apiKeywords = ['api', 'developer', 'key', 'token', 'access', 'credentials'];
+                        try {
+                            root.querySelectorAll('a').forEach(link => {
+                                const text = (link.innerText || '').toLowerCase();
+                                const href = (link.href || '').toLowerCase();
 
-            for pattern in button_patterns:
-                try:
-                    elements = self.driver.find_elements(By.XPATH, pattern)
-                    for el in elements:
-                        text = el.text.strip()
-                        if text:
-                            results["generate_buttons"].append({
-                                "text": text,
-                                "tag": el.tag_name,
-                            })
-                except Exception:
-                    continue
+                                for (const keyword of apiKeywords) {
+                                    if (text.includes(keyword) || href.includes(keyword)) {
+                                        results.api_links.push({
+                                            text: link.innerText?.trim() || '',
+                                            url: link.href
+                                        });
+                                        break;
+                                    }
+                                }
+                            });
+                        } catch (e) {}
+                    }
 
-            # Look for API-related links
-            try:
-                all_links = self.driver.find_elements(By.TAG_NAME, "a")
-                api_keywords = ["api", "developer", "key", "token", "access", "credentials"]
+                    // Search in main document
+                    searchInRoot(document);
 
-                for link in all_links:
-                    text = (link.text or "").lower()
-                    href = (link.get_attribute("href") or "").lower()
+                    // Search in Shadow DOM
+                    document.querySelectorAll('*').forEach(element => {
+                        if (element.shadowRoot) {
+                            searchInRoot(element.shadowRoot);
+                        }
+                    });
 
-                    for keyword in api_keywords:
-                        if keyword in text or keyword in href:
-                            results["api_links"].append({
-                                "text": link.text.strip(),
-                                "url": link.get_attribute("href"),
-                            })
-                            break
-            except Exception:
-                pass
+                    return results;
+                }
+            """)
+
+            results["success"] = True
 
             logger.info(f"Found API key elements: {len(results['api_key_displays'])} displays, "
                        f"{len(results['generate_buttons'])} buttons, {len(results['api_links'])} links")
@@ -594,7 +698,8 @@ class BrowserAutomationService:
         Find all form fields on the current page.
 
         Searches are performed on the live DOM with JavaScript fully executed,
-        ensuring all dynamically-generated form fields are discovered.
+        ensuring all dynamically-generated form fields are discovered. Also
+        searches Shadow DOM for form fields.
 
         Returns:
             Dict with list of form fields and their properties
@@ -602,30 +707,60 @@ class BrowserAutomationService:
         self._ensure_driver()
 
         try:
-            from selenium.webdriver.common.by import By
+            # Use JavaScript to find form fields in both main DOM and Shadow DOM
+            fields = self.page.evaluate("""
+                () => {
+                    const fields = [];
 
-            fields = []
-
-            # Find all input elements using live DOM with JavaScript fully executed
-            input_types = ["input", "textarea", "select"]
-
-            for tag in input_types:
-                elements = self.driver.find_elements(By.TAG_NAME, tag)
-
-                for el in elements:
-                    field_info = {
-                        "tag": tag,
-                        "type": el.get_attribute("type") or tag,
-                        "name": el.get_attribute("name"),
-                        "id": el.get_attribute("id"),
-                        "placeholder": el.get_attribute("placeholder"),
-                        "label": self._find_label_for_element(el),
-                        "required": el.get_attribute("required") is not None,
+                    // Helper to check if element is visible
+                    function isVisible(el) {
+                        return el.offsetWidth > 0 && el.offsetHeight > 0;
                     }
 
-                    # Only include visible fields
-                    if el.is_displayed():
-                        fields.append(field_info)
+                    // Helper to find label for element
+                    function findLabel(el) {
+                        if (el.id) {
+                            const label = document.querySelector(`label[for="${el.id}"]`);
+                            if (label) return label.innerText?.trim();
+                        }
+                        const parent = el.closest('label');
+                        if (parent) return parent.innerText?.trim();
+                        return null;
+                    }
+
+                    // Helper to search within a root (document or shadow root)
+                    function searchInRoot(root) {
+                        const tags = ['input', 'textarea', 'select'];
+                        tags.forEach(tag => {
+                            root.querySelectorAll(tag).forEach(el => {
+                                if (isVisible(el)) {
+                                    fields.push({
+                                        tag: tag,
+                                        type: el.type || tag,
+                                        name: el.name || null,
+                                        id: el.id || null,
+                                        placeholder: el.placeholder || null,
+                                        label: findLabel(el),
+                                        required: el.required || false
+                                    });
+                                }
+                            });
+                        });
+                    }
+
+                    // Search in main document
+                    searchInRoot(document);
+
+                    // Search in Shadow DOM
+                    document.querySelectorAll('*').forEach(element => {
+                        if (element.shadowRoot) {
+                            searchInRoot(element.shadowRoot);
+                        }
+                    });
+
+                    return fields;
+                }
+            """)
 
             logger.info(f"Found {len(fields)} form fields")
             return {
@@ -641,36 +776,12 @@ class BrowserAutomationService:
                 "error": str(e),
             }
 
-    def _find_label_for_element(self, element) -> Optional[str]:
-        """
-        Find the label text for a form element.
-
-        Uses XPath on the live DOM with JavaScript fully executed to find associated
-        label elements, including any dynamically-generated labels.
-        """
-        try:
-            from selenium.webdriver.common.by import By
-
-            # Check for associated label via 'for' attribute using XPath on live DOM
-            el_id = element.get_attribute("id")
-            if el_id:
-                labels = self.driver.find_elements(By.XPATH, f"//label[@for='{el_id}']")
-                if labels:
-                    return labels[0].text.strip()
-
-            # Check for parent label
-            parent = element.find_element(By.XPATH, "./parent::label")
-            if parent:
-                return parent.text.strip()
-
-        except Exception:
-            pass
-
-        return None
 
     def wait_for_element(self, selector: str, timeout: int = 10) -> Dict[str, Any]:
         """
         Wait for an element to appear on the page.
+
+        Supports Shadow DOM piercing with >> syntax.
 
         Args:
             selector: CSS selector or XPath for the element
@@ -684,29 +795,32 @@ class BrowserAutomationService:
         self._ensure_driver()
 
         try:
-            from selenium.webdriver.common.by import By
-            from selenium.webdriver.support.ui import WebDriverWait
-            from selenium.webdriver.support import expected_conditions as EC
-            from selenium.common.exceptions import TimeoutException
-
-            wait = WebDriverWait(self.driver, timeout)
-
-            # All selector strategies operate on the live DOM with JavaScript executed
+            # Try different selector strategies
             strategies = [
-                (By.CSS_SELECTOR, selector),
-                (By.XPATH, selector),
-                (By.ID, selector),
+                ("css", selector),
+                ("xpath", selector if selector.startswith("//") else None),
+                ("css", f"#{selector}"),
             ]
 
-            for by_type, locator in strategies:
+            for strategy_type, locator in strategies:
+                if not locator:
+                    continue
+
                 try:
-                    element = wait.until(EC.presence_of_element_located((by_type, locator)))
+                    if strategy_type == "xpath":
+                        element = self.page.locator(f"xpath={locator}").first
+                    else:
+                        element = self.page.locator(locator).first
+
+                    # Wait for element to be visible
+                    element.wait_for(state="visible", timeout=timeout * 1000)
+
                     return {
                         "success": True,
-                        "text": element.text,
-                        "tag": element.tag_name,
+                        "text": element.text_content(),
+                        "tag": element.evaluate("el => el.tagName.toLowerCase()"),
                     }
-                except TimeoutException:
+                except Exception:
                     continue
 
             return {
@@ -734,7 +848,7 @@ class BrowserAutomationService:
         self._ensure_driver()
 
         try:
-            result = self.driver.execute_script(script)
+            result = self.page.evaluate(script)
             return {
                 "success": True,
                 "result": result,
@@ -748,15 +862,24 @@ class BrowserAutomationService:
 
     def close(self):
         """Close the browser and clean up resources."""
-        if self.driver:
-            try:
-                self.driver.quit()
-                logger.info("Browser closed")
-            except Exception as e:
-                logger.error(f"Error closing browser: {e}")
-            finally:
-                self.driver = None
-                self._initialized = False
+        try:
+            if self.page:
+                self.page.close()
+            if self.context:
+                self.context.close()
+            if self.browser:
+                self.browser.close()
+            if self.playwright:
+                self.playwright.stop()
+            logger.info("Browser closed")
+        except Exception as e:
+            logger.error(f"Error closing browser: {e}")
+        finally:
+            self.page = None
+            self.context = None
+            self.browser = None
+            self.playwright = None
+            self._initialized = False
 
     def __enter__(self):
         """Context manager entry."""

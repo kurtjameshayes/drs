@@ -18,4 +18,5 @@ jsonpath-ng==1.6.1
 arcadepy>=0.1.0
 selenium>=4.15.0
 webdriver-manager>=4.0.0
+playwright>=1.40.0
 cryptography>=41.0.0
