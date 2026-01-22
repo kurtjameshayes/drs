@@ -134,8 +134,8 @@ class BrowserAutomationService:
         try:
             from selenium.webdriver.common.by import By
 
-            # Get basic page info
-            html_content = self.driver.page_source
+            # Get the rendered DOM after JavaScript execution
+            html_content = self.driver.execute_script("return document.documentElement.outerHTML")
 
             # Strip <head> element before processing
             html_content = re.sub(r'<head[^>]*>.*?</head>', '', html_content, flags=re.IGNORECASE | re.DOTALL)
