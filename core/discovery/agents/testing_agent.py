@@ -26,6 +26,7 @@ from ..state import (
 from ..prompts import TESTING_AGENT_SYSTEM, TESTING_AGENT_TASK
 from ..tools import make_http_request
 from ..llm_logger import invoke_llm_with_logging
+from ..skill_registry import get_skill_registry
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,17 @@ class TestingAgent:
         )
         self.max_retries = Config.DISCOVERY_TEST_RETRIES
         self.backoff_factor = Config.DISCOVERY_TEST_BACKOFF
+        self.skill_registry = get_skill_registry()
+
+    def _build_system_prompt_with_skills(self, base_prompt: str, task_description: str) -> str:
+        """Build system prompt with task-specific skills."""
+        skills = self.skill_registry.get_skills_for_task('testing', task_description)
+
+        if skills:
+            skills_text = self.skill_registry.format_skills_for_prompt(skills)
+            return f"{base_prompt}\n\n{skills_text}"
+
+        return base_prompt
 
     def _build_test_request(
         self, access_doc: Dict[str, Any], user_description: str
@@ -233,9 +245,9 @@ class TestingAgent:
                 error_msg = data.get("error") or data.get("errors")
                 return False, f"API returned error: {error_msg}"
 
-        # Use LLM to validate data relevance
-        messages = [
-            SystemMessage(content="""You are a data validation specialist. Analyze the API response
+        # Get system prompt with task-specific skills
+        system_prompt = self._build_system_prompt_with_skills(
+            """You are a data validation specialist. Analyze the API response
 to determine if it contains data relevant to the user's needs.
 
 Return a JSON object:
@@ -243,7 +255,13 @@ Return a JSON object:
     "is_relevant": true/false,
     "confidence": 0.0-1.0,
     "reasoning": "explanation"
-}"""),
+}""",
+            f"Validate API response data for {user_description}"
+        )
+
+        # Use LLM to validate data relevance
+        messages = [
+            SystemMessage(content=system_prompt),
             HumanMessage(content=f"""User is looking for: {user_description}
 
 API Response (sample):

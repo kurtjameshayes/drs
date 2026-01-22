@@ -342,7 +342,7 @@ def invoke_llm_with_logging(
     messages: List[BaseMessage],
     agent_name: str,
     operation: Optional[str] = None,
-    log_level: int = logging.DEBUG
+    log_level: int = logging.INFO
 ) -> Any:
     """
     Invoke an LLM with logging of the prompt and response.
@@ -355,7 +355,7 @@ def invoke_llm_with_logging(
         messages: List of messages to send to the LLM
         agent_name: Name of the calling agent for log context
         operation: Optional description of the operation being performed
-        log_level: Logging level to use (default: DEBUG)
+        log_level: Logging level to use (default: INFO)
 
     Returns:
         The LLM response object

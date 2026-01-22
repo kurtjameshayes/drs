@@ -26,6 +26,7 @@ from core.discovery.services.api_key_store import APIKeyStore
 from core.discovery.services.arcade_email_service import ArcadeEmailService
 from core.discovery.services.browser_automation_service import BrowserAutomationService
 from core.discovery.llm_logger import invoke_llm_with_logging, AgentLogger
+from core.discovery.skill_registry import get_skill_registry
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,7 @@ class APIKeyAgent:
         )
         self.key_store = APIKeyStore(db_client)
         self.browser_service = None
+        self.skill_registry = get_skill_registry()
 
         # Initialize comprehensive logging
         self.agent_logger = AgentLogger("APIKeyAgent", log_level=logging.INFO)
@@ -99,6 +101,16 @@ class APIKeyAgent:
                 arcade_api_key_set=bool(Config.ARCADE_API_KEY),
                 discovery_email_set=bool(Config.DISCOVERY_EMAIL),
             )
+
+    def _build_system_prompt_with_skills(self, base_prompt: str, task_description: str) -> str:
+        """Build system prompt with task-specific skills."""
+        skills = self.skill_registry.get_skills_for_task('api_key', task_description)
+
+        if skills:
+            skills_text = self.skill_registry.format_skills_for_prompt(skills)
+            return f"{base_prompt}\n\n{skills_text}"
+
+        return base_prompt
 
     def _get_browser_service(self) -> BrowserAutomationService:
         """Get or create the browser automation service."""
@@ -328,6 +340,40 @@ class APIKeyAgent:
                         registration_url=registration_url,
                     ))
 
+                # If Step 4 resulted in an error, stop and inform the user
+                if request_result.get("error"):
+                    step_error = self.agent_logger.log_step_start(
+                        step_name="handle_automation_error",
+                        step_description="Handle critical error from automated registration",
+                        variables={
+                            "error": request_result.get("error"),
+                        },
+                    )
+
+                    self.agent_logger.log_step_result(
+                        step_num=step_error,
+                        step_name="handle_automation_error",
+                        success=False,
+                        error=request_result.get("error"),
+                    )
+
+                    self.agent_logger.log_warning(
+                        "Automated registration failed with critical error, stopping workflow and requesting manual intervention",
+                        error=request_result.get("error"),
+                    )
+
+                    return self._request_manual_intervention(
+                        state,
+                        {
+                            "reason": "automation_failed_with_error",
+                            "message": f"Automated registration for {source_name} failed: {request_result.get('error')}. "
+                                      f"Please register manually and provide the API key.",
+                            "registration_url": registration_url,
+                            "site_info": site_info,
+                            "error_details": request_result.get("error"),
+                        },
+                    )
+
             # Step 5: Check if we can poll email for key
             self.agent_logger.log_decision(
                 step_num=workflow_step,
@@ -477,7 +523,7 @@ class APIKeyAgent:
             self.agent_logger.log_substep(
                 step_num,
                 "Navigation result",
-                {"success": nav_result.get("success"), "current_url": nav_result.get("url")},
+                {"success": nav_result.get("success"), "current_url": nav_result.get("current_url")},
             )
 
             if not nav_result.get("success"):
@@ -915,9 +961,14 @@ class APIKeyAgent:
                     )
                     browser.fill_form_field(field_selector, field_value)
 
-            # Submit the form
-            self.agent_logger.log_substep(step_num, "Submitting registration form")
-            submit_result = browser.submit_form()
+            # Submit the form using the selector from analysis if available
+            submit_selector = site_info.get("submit_button_selector")
+            self.agent_logger.log_substep(
+                step_num,
+                "Submitting registration form",
+                {"submit_selector": submit_selector or "using default patterns"},
+            )
+            submit_result = browser.submit_form(selector=submit_selector)
 
             self.agent_logger.log_substep(
                 step_num,
@@ -1548,25 +1599,52 @@ When looking for form fields, recognize these common patterns:
 When looking for submit buttons, recognize these common patterns:
 
 <submit-button-example-1>
-<button type="submit">
+<button type="submit">Submit</button>
 </submit-button-example-1>
 
 <submit-button-example-2>
-<input type="submit">
+<input type="submit" value="Sign Up">
 </submit-button-example-2>
 
 <submit-button-example-3>
-<input type="image" src="submit.png">
+<button class="btn btn-primary">Create Account</button>
 </submit-button-example-3>
 
 <submit-button-example-4>
-<button>Submit</button>
+<input type="submit" value="Register">
 </submit-button-example-4>
+
+<submit-button-example-5>
+<button onclick="submitForm()">Get API Key</button>
+</submit-button-example-5>
+
+<submit-button-example-6>
+<a class="btn btn-submit" href="javascript:void(0)">Continue</a>
+</submit-button-example-6>
+
+<submit-button-example-7>
+<button aria-label="Submit registration form">
+  <svg>...</svg>
+</button>
+</submit-button-example-7>
+
+<submit-button-example-8>
+<input type="image" src="submit.png" alt="Submit">
+</submit-button-example-8>
+
+<submit-button-example-9>
+<button id="submit-btn" type="submit">Complete Registration</button>
+</submit-button-example-9>
+
+<submit-button-example-10>
+<button data-testid="form-submit">Request Key</button>
+</submit-button-example-10>
 
 Determine:
 1. Can this registration be automated (just email/password, no captcha)?
 2. What form fields need to be filled?
 3. Will this require email verification?
+4. What is the submit button selector/identifier? (id, name, class, text content, or xpath)
 
 Return JSON:
 {{
@@ -1575,6 +1653,7 @@ Return JSON:
     "has_captcha": true/false,
     "requires_email_verification": true/false,
     "submit_button_text": "text on submit button",
+    "submit_button_selector": "selector or identifier for the submit button (id, class, xpath, text, etc.)",
     "notes": "any important observations"
 }}
 """
@@ -1590,7 +1669,16 @@ Return JSON:
             import time
             start_time = time.time()
 
-            messages = [HumanMessage(content=prompt)]
+            # Get system prompt with task-specific skills
+            system_prompt = self._build_system_prompt_with_skills(
+                """You are a registration page analyzer. Analyze the form and determine if registration can be automated.""",
+                "Analyze registration form for automation feasibility"
+            )
+
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=prompt)
+            ]
             response = invoke_llm_with_logging(
                 self.llm,
                 messages,
@@ -1923,6 +2011,14 @@ When identifying form fields, look for these common patterns:
 <form-field-example-5>
 <textarea name="use_case">
 </form-field-example-5>
+
+When looking for submit buttons, they may appear as:
+- <button type="submit">Submit</button>
+- <input type="submit" value="Sign Up">
+- <button class="btn btn-primary">Create Account</button>
+- <button onclick="submitForm()">Get API Key</button>
+- <a class="btn-submit" href="javascript:void(0)">Continue</a>
+- <button aria-label="Submit">Submit</button>
 
 For each field that should be filled, provide the selector and value.
 Common field mappings:
