@@ -23,7 +23,7 @@ from ..state import (
     HumanInputRequest,
     HumanInputType,
 )
-from ..prompts import TESTING_AGENT_SYSTEM, TESTING_AGENT_TASK
+from ..prompts import TESTING_AGENT_TASK
 from ..tools import make_http_request
 from ..llm_logger import invoke_llm_with_logging
 from ..skill_registry import get_skill_registry
@@ -49,15 +49,16 @@ class TestingAgent:
         self.backoff_factor = Config.DISCOVERY_TEST_BACKOFF
         self.skill_registry = get_skill_registry()
 
-    def _build_system_prompt_with_skills(self, base_prompt: str, task_description: str) -> str:
-        """Build system prompt with task-specific skills."""
+    def _build_system_prompt_with_skills(self, task_description: str) -> str:
+        """Build system prompt from task-specific skills loaded from SKILL.md files."""
         skills = self.skill_registry.get_skills_for_task('testing', task_description)
 
         if skills:
             skills_text = self.skill_registry.format_skills_for_prompt(skills)
-            return f"{base_prompt}\n\n{skills_text}"
+            return skills_text
 
-        return base_prompt
+        # Fallback if no skills are found (shouldn't happen with proper skill files)
+        return "You are a data source testing specialist verifying API access."
 
     def _build_test_request(
         self, access_doc: Dict[str, Any], user_description: str
@@ -245,17 +246,8 @@ class TestingAgent:
                 error_msg = data.get("error") or data.get("errors")
                 return False, f"API returned error: {error_msg}"
 
-        # Get system prompt with task-specific skills
+        # Get system prompt from skills loaded from SKILL.md files
         system_prompt = self._build_system_prompt_with_skills(
-            """You are a data validation specialist. Analyze the API response
-to determine if it contains data relevant to the user's needs.
-
-Return a JSON object:
-{
-    "is_relevant": true/false,
-    "confidence": 0.0-1.0,
-    "reasoning": "explanation"
-}""",
             f"Validate API response data for {user_description}"
         )
 
