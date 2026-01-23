@@ -1,3 +1,10 @@
+---
+name: web_search
+description: Search the web and known data registries for data sources
+agent_types: [search, examination, documentation]
+task_keywords: [search, find, discover, locate, look for, registry, catalog, index, directory]
+---
+
 # Skill: Web Data Source Search
 
 ## Purpose

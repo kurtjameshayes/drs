@@ -1,3 +1,10 @@
+---
+name: test_endpoint
+description: Test API endpoints and verify responses
+agent_types: [testing]
+task_keywords: [test, verify, check, validate, request, endpoint, error, fail, recover, retry, problem, issue]
+---
+
 # Skill: API Endpoint Testing and Validation
 
 ## Purpose

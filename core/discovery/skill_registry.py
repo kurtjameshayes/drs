@@ -7,9 +7,15 @@ This enables dynamic, task-specific LLM guidance without modifying core agent co
 
 import os
 import logging
+import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set
 from pathlib import Path
+
+try:
+    import yaml
+except ImportError:
+    yaml = None
 
 logger = logging.getLogger(__name__)
 
@@ -46,87 +52,15 @@ class SkillRegistry:
         self._load_skills_from_disk()
 
     def _load_default_skills(self):
-        """Load built-in skills that are always available."""
+        """
+        Load built-in skills that are always available.
 
-        self.skills['web_search'] = Skill(
-            name='web_search',
-            description='Search the web for information',
-            agent_types=['search', 'examination', 'documentation'],
-            task_keywords=['search', 'find', 'discover', 'locate', 'look for'],
-            prompt_template='You can use web_search to find relevant information online and identify data sources across the internet.',
-        )
-
-        self.skills['registry_search'] = Skill(
-            name='registry_search',
-            description='Search known data registries',
-            agent_types=['search', 'examination'],
-            task_keywords=['registry', 'catalog', 'index', 'directory'],
-            prompt_template='You can search known data registries (Data.gov, APIs.guru, GitHub, etc.) to find established data sources.',
-        )
-
-        self.skills['parse_html'] = Skill(
-            name='parse_html',
-            description='Parse and analyze HTML content',
-            agent_types=['examination', 'documentation'],
-            task_keywords=['html', 'page', 'content', 'parse', 'analyze'],
-            prompt_template='You can parse and analyze HTML to extract form fields, API documentation, endpoints, and other relevant page content.',
-        )
-
-        self.skills['api_analysis'] = Skill(
-            name='api_analysis',
-            description='Analyze API documentation and structure',
-            agent_types=['documentation', 'examination'],
-            task_keywords=['api', 'endpoint', 'rest', 'graphql', 'openapi', 'swagger'],
-            prompt_template='You can analyze API documentation including REST, GraphQL, and OpenAPI specifications to understand authentication, endpoints, and parameters.',
-        )
-
-        self.skills['browser_automation'] = Skill(
-            name='browser_automation',
-            description='Automate browser actions for form filling and interaction',
-            agent_types=['api_key'],
-            task_keywords=['form', 'fill', 'submit', 'register', 'signup', 'automate', 'browser'],
-            prompt_template='You can automate browser actions to fill out and submit registration forms, navigate sites, and extract data from dynamic pages.',
-        )
-
-        self.skills['email_monitoring'] = Skill(
-            name='email_monitoring',
-            description='Monitor email for verification codes and messages',
-            agent_types=['api_key'],
-            task_keywords=['email', 'verify', 'verification', 'code', 'confirm'],
-            prompt_template='You can monitor email accounts for verification codes and extract authentication tokens from verification messages.',
-        )
-
-        self.skills['form_field_identification'] = Skill(
-            name='form_field_identification',
-            description='Identify and classify form fields',
-            agent_types=['examination', 'api_key'],
-            task_keywords=['form', 'field', 'input', 'required', 'optional'],
-            prompt_file='core/discovery/skills/api-acquisition-request-page-analyze/SKILL.md',
-        )
-
-        self.skills['fetch_content'] = Skill(
-            name='fetch_content',
-            description='Fetch and analyze web page content',
-            agent_types=['examination', 'documentation', 'testing'],
-            task_keywords=['fetch', 'get', 'retrieve', 'download', 'request'],
-            prompt_template='You can fetch web pages and extract relevant content including text, HTML structure, and metadata.',
-        )
-
-        self.skills['test_endpoint'] = Skill(
-            name='test_endpoint',
-            description='Test API endpoints and verify responses',
-            agent_types=['testing'],
-            task_keywords=['test', 'verify', 'check', 'validate', 'request', 'endpoint'],
-            prompt_template='You can make HTTP requests to test API endpoints, validate responses, check authentication, and verify data formats.',
-        )
-
-        self.skills['error_recovery'] = Skill(
-            name='error_recovery',
-            description='Analyze errors and recommend recovery strategies',
-            agent_types=['testing', 'workflow_decision'],
-            task_keywords=['error', 'fail', 'recover', 'retry', 'problem', 'issue'],
-            prompt_template='You can analyze errors and failures, identify root causes, and recommend appropriate recovery or retry strategies.',
-        )
+        This method is now primarily a placeholder. Skills are loaded from the filesystem
+        via _load_skills_from_disk(). You can add fallback/core skills here if needed.
+        """
+        # All skills are now loaded from SKILL.md files in the skills/ directory
+        # This allows for easier maintenance and updates without code changes
+        pass
 
     def _load_skill_file_content(self, file_path: str) -> Optional[str]:
         """
@@ -164,13 +98,78 @@ class SkillRegistry:
             logger.error(f"Failed to load skill file {file_path}: {e}")
             return None
 
+    def _parse_skill_file(self, skill_file: Path) -> Optional[tuple[Dict, str]]:
+        """
+        Parse a SKILL.md file to extract YAML frontmatter and content.
+
+        Args:
+            skill_file: Path to SKILL.md file
+
+        Returns:
+            Tuple of (metadata_dict, content) or None if parsing fails
+
+        Expected format:
+            ---
+            name: skill_name
+            description: Brief description
+            agent_types: [agent1, agent2]
+            task_keywords: [keyword1, keyword2]
+            requires_config: optional_config_key
+            ---
+            # Rest of markdown content
+        """
+        try:
+            with open(skill_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            # Check for YAML frontmatter (must start with ---)
+            if not content.startswith('---'):
+                logger.warning(f"Skill file {skill_file} missing YAML frontmatter")
+                return None
+
+            # Extract frontmatter and content
+            # Pattern: ---\n...yaml...\n---\n...content...
+            parts = content.split('---', 2)
+            if len(parts) < 3:
+                logger.warning(f"Skill file {skill_file} has malformed YAML frontmatter")
+                return None
+
+            frontmatter_str = parts[1].strip()
+            skill_content = parts[2].strip()
+
+            # Parse YAML frontmatter
+            if yaml is None:
+                logger.error("PyYAML is not installed. Cannot parse skill metadata. Install with: pip install pyyaml")
+                return None
+
+            try:
+                metadata = yaml.safe_load(frontmatter_str)
+            except yaml.YAMLError as e:
+                logger.error(f"Failed to parse YAML frontmatter in {skill_file}: {e}")
+                return None
+
+            # Validate required fields
+            required_fields = ['name', 'description', 'agent_types', 'task_keywords']
+            for field in required_fields:
+                if field not in metadata:
+                    logger.warning(f"Skill file {skill_file} missing required field: {field}")
+                    return None
+
+            return metadata, skill_content
+
+        except Exception as e:
+            logger.error(f"Error parsing skill file {skill_file}: {e}")
+            return None
+
     def _load_skills_from_disk(self):
-        """Load additional skills from SKILL.md files in the skills directory."""
+        """Load skills from SKILL.md files in the skills directory."""
         skills_dir = Path(__file__).parent / 'skills'
 
         if not skills_dir.exists():
             logger.debug(f"Skills directory not found at {skills_dir}")
             return
+
+        loaded_count = 0
 
         # Iterate through skill subdirectories
         for skill_dir in skills_dir.iterdir():
@@ -182,16 +181,46 @@ class SkillRegistry:
                 continue
 
             try:
-                # For now, we just note that the skill exists
-                # In a production system, we'd parse the SKILL.md file to extract metadata
-                skill_name = skill_dir.name
-                logger.debug(f"Found skill directory: {skill_name}")
+                # Parse the SKILL.md file
+                result = self._parse_skill_file(skill_file)
+                if result is None:
+                    continue
 
-                # Load basic metadata (could be extended to parse SKILL.md)
-                # For now, skills from disk are informational - they're loaded
-                # into the system by explicit reference from agents
+                metadata, content = result
+
+                # Extract metadata fields
+                skill_name = metadata['name']
+                description = metadata['description']
+                agent_types = metadata.get('agent_types', [])
+                task_keywords = metadata.get('task_keywords', [])
+                requires_config = metadata.get('requires_config', None)
+
+                # Ensure lists are actually lists
+                if isinstance(agent_types, str):
+                    agent_types = [agent_types]
+                if isinstance(task_keywords, str):
+                    task_keywords = [task_keywords]
+
+                # Create the skill object
+                skill = Skill(
+                    name=skill_name,
+                    description=description,
+                    agent_types=agent_types,
+                    task_keywords=task_keywords,
+                    prompt_template=content,  # Store the full content as template
+                    prompt_file=None,  # We already loaded the content
+                    requires_config=requires_config
+                )
+
+                # Register the skill
+                self.skills[skill_name] = skill
+                loaded_count += 1
+                logger.info(f"Loaded skill from disk: {skill_name} (agents: {', '.join(agent_types)})")
+
             except Exception as e:
                 logger.warning(f"Error loading skill from {skill_file}: {e}")
+
+        logger.info(f"Loaded {loaded_count} skills from filesystem")
 
     def get_skills_for_agent(self, agent_type: str) -> List[Skill]:
         """
