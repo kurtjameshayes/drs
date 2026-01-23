@@ -19,7 +19,7 @@ from ..state import (
     ExaminedSource,
     WorkflowError,
 )
-from ..prompts import EXAMINATION_AGENT_SYSTEM, EXAMINATION_AGENT_TASK
+from ..prompts import EXAMINATION_AGENT_TASK
 from ..tools import fetch_url, check_api_availability, detect_access_methods, find_documentation_url
 from ..llm_logger import invoke_llm_with_logging
 from ..utils import extract_first_json_object, sanitize_for_format_string, check_relevance_from_metadata
@@ -47,15 +47,16 @@ class ExaminationAgent:
         )
         self.skill_registry = get_skill_registry()
 
-    def _build_system_prompt_with_skills(self, base_prompt: str, task_description: str) -> str:
-        """Build system prompt with task-specific skills."""
+    def _build_system_prompt_with_skills(self, task_description: str) -> str:
+        """Build system prompt from task-specific skills loaded from SKILL.md files."""
         skills = self.skill_registry.get_skills_for_task('examination', task_description)
 
         if skills:
             skills_text = self.skill_registry.format_skills_for_prompt(skills)
-            return f"{base_prompt}\n\n{skills_text}"
+            return skills_text
 
-        return base_prompt
+        # Fallback if no skills are found (shouldn't happen with proper skill files)
+        return "You are a data source examination specialist determining access methods."
 
     def _examine_source(
         self, candidate: DataSourceCandidate, user_description: str
@@ -116,9 +117,8 @@ class ExaminationAgent:
         safe_source_description = sanitize_for_format_string(candidate.description)
         safe_user_description = sanitize_for_format_string(user_description)
 
-        # Get system prompt with task-specific skills
+        # Get system prompt from skills loaded from SKILL.md files
         system_prompt = self._build_system_prompt_with_skills(
-            EXAMINATION_AGENT_SYSTEM,
             f"Examine {safe_source_name} at {safe_source_url} for data relevance to {safe_user_description}"
         )
 

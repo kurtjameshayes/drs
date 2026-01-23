@@ -102,15 +102,16 @@ class APIKeyAgent:
                 discovery_email_set=bool(Config.DISCOVERY_EMAIL),
             )
 
-    def _build_system_prompt_with_skills(self, base_prompt: str, task_description: str) -> str:
-        """Build system prompt with task-specific skills."""
+    def _build_system_prompt_with_skills(self, task_description: str) -> str:
+        """Build system prompt from task-specific skills loaded from SKILL.md files."""
         skills = self.skill_registry.get_skills_for_task('api_key', task_description)
 
         if skills:
             skills_text = self.skill_registry.format_skills_for_prompt(skills)
-            return f"{base_prompt}\n\n{skills_text}"
+            return skills_text
 
-        return base_prompt
+        # Fallback if no skills are found (shouldn't happen with proper skill files)
+        return "You are an API key acquisition specialist using browser automation."
 
     def _get_browser_service(self) -> BrowserAutomationService:
         """Get or create the browser automation service."""
@@ -1669,9 +1670,8 @@ Return JSON:
             import time
             start_time = time.time()
 
-            # Get system prompt with task-specific skills
+            # Get system prompt from skills loaded from SKILL.md files
             system_prompt = self._build_system_prompt_with_skills(
-                """You are a registration page analyzer. Analyze the form and determine if registration can be automated.""",
                 "Analyze registration form for automation feasibility"
             )
 
