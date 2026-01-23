@@ -1,3 +1,10 @@
+---
+name: examine_access_methods
+description: Examine data sources to determine available access methods
+agent_types: [examination, api_key]
+task_keywords: [examine, analyze, access, method, api, download, fetch, parse, html, content]
+---
+
 # Skill: Data Source Access Method Examination
 
 ## Purpose
@@ -51,6 +58,7 @@ Given a data source URL and user requirements:
 Return findings as JSON:
 ```json
 {
+  "payment_required": true/false,
   "has_api": true/false,
   "has_web_service": true/false,
   "has_download": true/false,
@@ -81,3 +89,8 @@ Return findings as JSON:
 - May require login
 - Download links primary access method
 - Citation requirements in terms
+
+### Final Instructions
+- If a site has an API available but doesn't require it, consider that it needs the API key.
+- If a site has an API available but doesn't require it, consider that it needs the API key.
+- Do not include sites which require payment.
