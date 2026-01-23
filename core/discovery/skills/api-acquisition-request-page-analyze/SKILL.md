@@ -1,3 +1,10 @@
+---
+name: form_field_identification
+description: Identify and classify form fields for API key registration
+agent_types: [examination, api_key]
+task_keywords: [form, field, input, required, optional]
+---
+
 # Skill: Identify API Key Registration Form Fields
 
 ## Purpose

@@ -1,3 +1,10 @@
+---
+name: examine_access_methods
+description: Examine data sources to determine available access methods
+agent_types: [examination]
+task_keywords: [examine, analyze, access, method, api, download, fetch, parse, html, content]
+---
+
 # Skill: Data Source Access Method Examination
 
 ## Purpose
