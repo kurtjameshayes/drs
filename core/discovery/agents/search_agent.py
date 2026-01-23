@@ -316,6 +316,10 @@ Score each source by relevance to the user's needs.""")
 
                 # Sort by score
                 candidates.sort(key=lambda x: x.relevance_score, reverse=True)
+
+                # Filter out commercial sources
+                candidates = [c for c in candidates if c.source_type.lower() != "commercial"]
+
                 return candidates[:self.max_results]
 
         except Exception as e:
@@ -327,6 +331,9 @@ Score each source by relevance to the user's needs.""")
             candidate = _create_candidate(r)
             if candidate:
                 candidates.append(candidate)
+
+        # Filter out commercial sources
+        candidates = [c for c in candidates if c.source_type.lower() != "commercial"]
 
         return candidates
 
