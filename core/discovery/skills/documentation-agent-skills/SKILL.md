@@ -1,3 +1,10 @@
+---
+name: api_documentation_analysis
+description: Analyze API documentation to extract authentication details and endpoints
+agent_types: [documentation, examination]
+task_keywords: [api, documentation, endpoint, rest, graphql, openapi, swagger, authentication, auth]
+---
+
 # Skill: API Documentation Analysis
 
 ## Purpose

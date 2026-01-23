@@ -1,3 +1,10 @@
+---
+name: browser_automation
+description: Automate browser actions for form filling and API key acquisition
+agent_types: [api_key]
+task_keywords: [form, fill, submit, register, signup, automate, browser, email, verify, verification, code, confirm]
+---
+
 # Skill: API Key Acquisition via Browser Automation
 
 ## Purpose
